@@ -55,3 +55,9 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 **Assumption made:** Per selected goal, retreat the frequency step to 0 one unit at a time first; only once a goal's frequency step is fully retreated does its duration step begin retreating, one minute at a time. This is deterministic, reversible, and guarantees the loop terminates with `load <= ceiling`: once every goal's `freqStep` and `durStep` are both 0, `load == Σ(currentFreq × currentDur)`, which is always `<= ceiling` since `ceiling` is that same sum × 1.15. Implemented in `src/lib/generationMath.ts` (`applyCeiling`).
 **Confidence:** medium
 **Status:** open
+
+## [004] Fuzzy-match algorithm and similarity threshold for tag reuse — 2026-08-02 08:40
+**Question:** CONTEXT.md §9a and the ticket both say new tag entries are "fuzzy-matched against existing tags to resist vocabulary fragmentation," with "tired" vs "tierd" as the DoD's worked example — but neither names an algorithm or a similarity threshold.
+**Assumption made:** Optimal string alignment distance (Levenshtein plus adjacent-transposition as a single edit, so "tired"→"tierd" costs 1 edit, not 2) normalized to a 0-1 similarity (`1 - distance / maxLength`), matched at `>= 0.7`. Reasoning: transposition is the actual shape of the worked example's typo, so a distance metric blind to it would need a looser threshold that risks collapsing genuinely distinct short tags; OSA distance stays conservative (single-edit typos match, unrelated short words don't) while still resolving the example case comfortably above threshold (0.8). Implemented in `src/lib/tagRepository.ts` (`labelsFuzzyMatch`/`editDistance`).
+**Confidence:** medium
+**Status:** open

@@ -1,7 +1,7 @@
 ---
 id: 004
 title: Tag repository — fuzzy-match reuse + creation-time classification
-status: open
+status: done
 blocked_by: [001]
 ---
 
