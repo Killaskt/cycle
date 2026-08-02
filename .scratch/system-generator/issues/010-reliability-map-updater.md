@@ -1,7 +1,7 @@
 ---
 id: 010
 title: Reliability map updater
-status: open
+status: done
 blocked_by: [001, 007]
 ---
 
