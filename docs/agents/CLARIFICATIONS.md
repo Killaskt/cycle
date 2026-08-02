@@ -92,6 +92,12 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 **Confidence:** low
 **Status:** open
 
+## [009] Un-checking a completed slot — 2026-08-02 13:45
+**Question:** The ticket says "decide and document whether un-checking is supported — the spec doesn't dictate undo behavior."
+**Assumption made:** Un-checking is not supported. No `uncompleteSlot` function exists in `src/lib/today.ts`; `completeSlot` is idempotent (no-op) on an already-completed slot but there is no reverse operation. Reasoning: `completions` inserts are the reliability map's primary continuously-logged signal (CONTEXT.md §8), and ticket 010's DB triggers (`supabase/migrations/20260802010000_reliability_map_triggers.sql`) only ever increment `reliability_map.completions`/`.scheduled` on insert — there is no compensating decrement trigger. Supporting undo now would require either deleting a `completions` row a trigger has already reacted to (silently overcounting `reliability_map` forever after) or adding a new decrement trigger, neither of which any ticket has specified. Most conservative/reversible: ship check-only; add uncheck plus its trigger-side decrement as a follow-up ticket if product wants it.
+**Confidence:** medium
+**Status:** open
+
 ## [005] Live model provider/API for `MODEL_PROVIDER=live` — 2026-08-02 12:45
 **Question:** Neither CONTEXT.md nor `docs/SPEC.md` names which model API the live provider should call.
 **Assumption made:** Anthropic's Messages API (`https://api.anthropic.com/v1/messages`), key from `ANTHROPIC_API_KEY`, model name overridable via `MODEL_NAME` (default `claude-3-5-haiku-latest`), temperature 0 — `supabase/functions/generate/provider.ts` (`liveProvider`). Untested in this ticket (no live key in this environment; DoD is fixture-only per `.claude/skills/local-supabase-stack/SKILL.md`). The seam shape (`Provider = (input) => Promise<unknown>`, validated uniformly by `validate.ts`) means swapping providers later needs no change outside this one function.
