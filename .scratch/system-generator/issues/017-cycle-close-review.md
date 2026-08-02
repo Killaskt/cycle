@@ -1,7 +1,7 @@
 ---
 id: 017
 title: Cycle-close review screen
-status: open
+status: done
 blocked_by: [009, 010, 011]
 ---
 
