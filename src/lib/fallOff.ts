@@ -30,12 +30,18 @@
 // commitment's focus_area's cycle (docs/SPEC.md §2 — ticket 014's
 // cycle-wide rate queries read this).
 //
-// At exactly occurrence 2, this also triggers The Amendment
+// At occurrence 2, this also triggers The Amendment
 // (`proposeAmendmentForFallOff`, ./amendment.ts): a pure deterministic rule
 // proposes a `MOVE`, logged to `amendments` with `user_response` left
 // unresolved until the caller renders the proposal and the user accepts or
-// rejects it (`acceptAmendment`/`rejectAmendmentWithRevision`). No
-// `amendments` row is created at any other occurrence.
+// rejects it (`acceptAmendment`/`rejectAmendmentWithRevision`).
+//
+// At occurrence 3 (ticket 013, CONTEXT.md §9a: "the amendment was wrong,
+// escalate to REMOVE"), the same trigger fires again — `proposeAmendment`
+// now handles occurrence 3 too, proposing `REMOVE` instead of `MOVE`, and
+// `proposeAmendmentForFallOff` also downgrades the relevant `learnings`
+// tag→action row as a side effect (see ./amendment.ts). No `amendments` row
+// is created at any occurrence other than 2 or 3.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolveTag, type ResolveTagInput } from './tagRepository'
@@ -62,7 +68,10 @@ export interface RecordFallOffResult {
   cycleId: string
   occurrenceInSlot: number
   tagId: string
-  /** Present only when this call's `occurrence_in_slot` is exactly 2 — The Amendment (ticket 012). */
+  /**
+   * Present only when this call's `occurrence_in_slot` is 2 (`MOVE`, ticket
+   * 012) or 3 (`REMOVE`, ticket 013) — The Amendment.
+   */
   amendment?: { amendmentId: string; proposal: AmendmentProposal }
 }
 
@@ -78,11 +87,12 @@ export interface RecordFallOffResult {
  * caller passed. `agent_followup_question`/`agent_followup_answer` are never
  * written by this function at any occurrence — see the file header.
  *
- * At exactly occurrence 2, this also calls `proposeAmendmentForFallOff`
+ * At occurrence 2 or 3, this also calls `proposeAmendmentForFallOff`
  * (./amendment.ts) after the `fall_offs` insert succeeds, logging a `MOVE`
- * proposal to `amendments` (unresolved — the caller still has to render it
- * and call `acceptAmendment`/`rejectAmendmentWithRevision`). No `amendments`
- * row is created at any other occurrence.
+ * (occurrence 2) or `REMOVE` (occurrence 3, ticket 013) proposal to
+ * `amendments` (unresolved — the caller still has to render it and call
+ * `acceptAmendment`/`rejectAmendmentWithRevision`). No `amendments` row is
+ * created at any other occurrence.
  *
  * Unlike `completeSlot`/`excuseSlot` (today.ts / excuseSlot.ts), this does
  * not guard on the slot's current `status`: recording a 2nd or 3rd fall-off
@@ -162,7 +172,7 @@ export async function recordFallOff(
   if (updateError) throw updateError
 
   let amendment: RecordFallOffResult['amendment']
-  if (occurrenceInSlot === 2) {
+  if (occurrenceInSlot === 2 || occurrenceInSlot === 3) {
     const { amendmentId, proposal } = await proposeAmendmentForFallOff(client, fallOff.id)
     amendment = { amendmentId, proposal }
   }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL } from './localSupabase'
 import { recordFallOff } from '../../lib/fallOff'
-import { acceptAmendment, rejectAmendmentWithRevision } from '../../lib/amendment'
+import { acceptAmendment, proposeAmendmentForFallOff, rejectAmendmentWithRevision } from '../../lib/amendment'
 
 // Ticket 011 DoD, exercised against the real local stack (RLS included):
 // - Submitting a 1st fall-off creates a fall_offs row with
@@ -387,6 +387,197 @@ describe('recordFallOff — 2nd occurrence, The Amendment (ticket 012)', () => {
 
     await expect(rejectAmendmentWithRevision(client, amendmentId, '   ')).rejects.toThrow(
       /rejection_reason is required/,
+    )
+  })
+})
+
+// Ticket 013 DoD, exercised against the real local stack (RLS included):
+// - A 3rd fall-off on a slot that already had a resolved 2nd-fall amendment
+//   proposes REMOVE (unresolved amendments row), and accepting it actually
+//   soft-deletes the commitment (`removed_at`) and deletes its future
+//   still-pending slots, while leaving already-resolved slots (the one that
+//   fell off) and all fall-off/amendment history untouched.
+// - The (user_id, tag_id, action) `learnings` row for the 2nd-fall's
+//   tag→action mapping has its confidence reduced.
+// - A 3rd fall reaching the amendment path without a prior 2nd-fall
+//   amendment is explicitly rejected, not silently turned into a REMOVE.
+describe('recordFallOff — 3rd occurrence, downscope to REMOVE (ticket 013)', () => {
+  async function fallOffThreeTimes(
+    label: string,
+    options: { resolveSecond?: 'accept' | 'reject' } = {},
+  ) {
+    const setup = await setUpCycleWithSlots(label, ['2026-08-04', '2026-08-11'])
+    const slot = setup.slots[0]
+    const futureSlot = setup.slots[1]
+
+    const first = await recordFallOff(setup.client, setup.userId, {
+      slotId: slot.id,
+      whatHappened: 'Overslept.',
+      tag: { label: 'tired', classification: 'motivation' },
+    })
+
+    const second = await recordFallOff(setup.client, setup.userId, {
+      slotId: slot.id,
+      whatHappened: 'Overslept again.',
+      tag: { label: 'tired' },
+      mood: 'discouraged',
+    })
+
+    if (options.resolveSecond === 'accept') {
+      await acceptAmendment(setup.client, second.amendment!.amendmentId)
+    } else if (options.resolveSecond === 'reject') {
+      await rejectAmendmentWithRevision(setup.client, second.amendment!.amendmentId, 'still not great')
+    }
+
+    const third = await recordFallOff(setup.client, setup.userId, {
+      slotId: slot.id,
+      whatHappened: 'Fell off a third time.',
+      tag: { label: 'tired' },
+    })
+
+    return { ...setup, slot, futureSlot, first, second, third }
+  }
+
+  it('3rd fall on a slot with a resolved 2nd-fall amendment proposes REMOVE (unresolved amendments row)', async () => {
+    const { third, commitment } = await fallOffThreeTimes('fall-off-third-propose', { resolveSecond: 'accept' })
+
+    expect(third.occurrenceInSlot).toBe(3)
+    expect(third.amendment).toBeTruthy()
+    expect(third.amendment?.proposal).toMatchObject({
+      action: 'REMOVE',
+      target: { commitment_id: commitment.id },
+      confidence: 1.0,
+      proposed_by: 'rule',
+    })
+    expect(third.amendment?.proposal.reasoning.length).toBeGreaterThan(0)
+
+    const { data: amendmentRow, error } = await admin
+      .from('amendments')
+      .select('*')
+      .eq('fall_off_id', third.fallOffId)
+      .single()
+    expect(error).toBeNull()
+    expect(amendmentRow).toMatchObject({ action: 'REMOVE', user_response: null, proposed_by: 'rule' })
+  })
+
+  it('accepting the REMOVE amendment soft-deletes the commitment and deletes its future pending slots only', async () => {
+    const { third, commitment, client, futureSlot } = await fallOffThreeTimes('fall-off-third-accept', {
+      resolveSecond: 'accept',
+    })
+    const amendmentId = third.amendment!.amendmentId
+
+    const { data: beforeCommitment, error: beforeError } = await client
+      .from('commitments')
+      .select('removed_at')
+      .eq('id', commitment.id)
+      .single()
+    expect(beforeError).toBeNull()
+    expect(beforeCommitment?.removed_at).toBeNull()
+
+    await acceptAmendment(client, amendmentId)
+
+    const { data: afterCommitment, error: commitmentError } = await client
+      .from('commitments')
+      .select('removed_at')
+      .eq('id', commitment.id)
+      .single()
+    expect(commitmentError).toBeNull()
+    expect(afterCommitment?.removed_at).not.toBeNull()
+
+    const { data: remainingFutureSlot, error: slotError } = await client
+      .from('slots')
+      .select('id')
+      .eq('id', futureSlot.id)
+      .maybeSingle()
+    expect(slotError).toBeNull()
+    expect(remainingFutureSlot).toBeNull()
+
+    // The slot that actually fell off 3 times keeps its history — REMOVE
+    // only deletes future *pending* slots, never already-resolved ones.
+    const { data: fallenSlot, error: fallenSlotError } = await client
+      .from('slots')
+      .select('id, status')
+      .eq('id', third.slotId)
+      .single()
+    expect(fallenSlotError).toBeNull()
+    expect(fallenSlot?.status).toBe('fell_off')
+
+    const { count: fallOffCount, error: fallOffCountError } = await client
+      .from('fall_offs')
+      .select('id', { count: 'exact', head: true })
+      .eq('slot_id', third.slotId)
+    expect(fallOffCountError).toBeNull()
+    expect(fallOffCount).toBe(3)
+  })
+
+  it("downgrades the (user, tag, action) learnings row for the 2nd-fall's tag→action mapping", async () => {
+    const { third, userId, second } = await fallOffThreeTimes('fall-off-third-learnings', {
+      resolveSecond: 'accept',
+    })
+    expect(third.occurrenceInSlot).toBe(3)
+
+    const { data: learningRow, error } = await admin
+      .from('learnings')
+      .select('confidence, sample_size')
+      .eq('user_id', userId)
+      .eq('tag_id', second.tagId)
+      .eq('action', 'MOVE')
+      .single()
+    expect(error).toBeNull()
+    expect(learningRow?.confidence).toBeLessThan(0.5)
+    expect(learningRow?.sample_size).toBeGreaterThan(0)
+  })
+
+  it('downgrades learnings and proposes REMOVE even when the 2nd-fall amendment was rejected-with-revision', async () => {
+    const { third, userId, second } = await fallOffThreeTimes('fall-off-third-after-reject', {
+      resolveSecond: 'reject',
+    })
+
+    expect(third.amendment?.proposal.action).toBe('REMOVE')
+
+    const { data: learningRow, error } = await admin
+      .from('learnings')
+      .select('confidence')
+      .eq('user_id', userId)
+      .eq('tag_id', second.tagId)
+      .eq('action', 'MOVE')
+      .single()
+    expect(error).toBeNull()
+    expect(learningRow?.confidence).toBeLessThan(0.5)
+  })
+
+  it('a 3rd fall reaching the amendment path with no prior 2nd-fall amendment is explicitly rejected, not silently REMOVEd', async () => {
+    const { userId, client, cycle, slots } = await setUpCycleWithSlots('fall-off-third-no-second', [
+      '2026-08-04',
+    ])
+    const slot = slots[0]
+
+    // Bypass recordFallOff's normal ladder entirely: insert a fall_offs row
+    // directly at occurrence_in_slot 3, skipping occurrence 2 (and
+    // therefore skipping the amendments row occurrence 2 would have
+    // created) — the scenario ticket 013's DoD asks to guard against.
+    const { data: tag, error: tagError } = await client
+      .from('tags')
+      .insert({ user_id: userId, label: 'skip-second', classification: 'motivation' })
+      .select()
+      .single()
+    expect(tagError).toBeNull()
+
+    const { data: fallOffRow, error: fallOffError } = await client
+      .from('fall_offs')
+      .insert({
+        slot_id: slot.id,
+        cycle_id: cycle.id,
+        occurrence_in_slot: 3,
+        what_happened: 'Skipped straight to three.',
+        tag_id: tag!.id,
+      })
+      .select()
+      .single()
+    expect(fallOffError).toBeNull()
+
+    await expect(proposeAmendmentForFallOff(client, fallOffRow!.id)).rejects.toThrow(
+      /REMOVE requires a prior amendment at occurrence 2/,
     )
   })
 })

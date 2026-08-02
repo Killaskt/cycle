@@ -30,7 +30,7 @@ const expectedColumns: Record<string, string[]> = {
   ],
   commitments: [
     'id', 'focus_area_id', 'name', 'session_shape', 'freq', 'dur',
-    'bucket', 'rationale', 'from_fallback', 'created_at',
+    'bucket', 'rationale', 'from_fallback', 'created_at', 'removed_at',
   ],
   slots: [
     'id', 'commitment_id', 'scheduled_date', 'bucket', 'status', 'created_at',

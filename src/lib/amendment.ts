@@ -11,10 +11,16 @@
 // the same guarantee a future model-based proposer gets for free by sitting
 // behind this same contract.
 //
-// Scope is strictly `occurrence_in_slot === 2` -> `MOVE`. The 3rd-fall
-// `REMOVE` escalation (CONTEXT.md §9a's ladder) is ticket 013's extension of
-// this same contract; cycle-wide overload (§9c) is ticket 014's. Neither is
-// built here.
+// Ticket 012 built `occurrence_in_slot === 2` -> `MOVE`. Ticket 013 (this
+// extension) adds `occurrence_in_slot === 3` -> `REMOVE` (CONTEXT.md §9a's
+// ladder: "the amendment was wrong, escalate to REMOVE") plus the
+// tag→action `learnings` confidence downgrade CONTEXT.md §9a calls for at
+// that same occurrence. Cycle-wide overload (§9c) is ticket 014's, still not
+// built here. The disinterest-tag exposure gate (CONTEXT.md §9a: "cannot
+// trigger REMOVE before 3 completed sessions") is ticket 016's override of
+// this ticket's plain REMOVE — 016 is blocked_by [004, 012], not by 013, so
+// it lands *after* this ticket and overrides its output; nothing here
+// implements that gate.
 //
 // The "at most one agent-chosen follow-up question" mechanic (CONTEXT.md
 // §9a: "only if a hypothesis is worth testing... e.g. 3 morning falls tagged
@@ -79,6 +85,12 @@ export interface FallOffAmendmentContext {
 const MOVE_REASONING =
   "This has fallen off twice at this time. The plan was wrong for this slot, not you — moving it to a different time of day keeps the same commitment without adding or removing anything."
 
+// CONTEXT.md §9a's 3rd-fall row: "the amendment was wrong" — the *plan*
+// (specifically, the MOVE tried at the 2nd fall), never the person. §9e:
+// copy escalates in directness, not interrogation, as falls accumulate.
+const REMOVE_REASONING =
+  "This has fallen off a third time, even after moving it. The plan for this commitment was wrong, not you — removing it stops it from continuing to fail rather than trying the same thing again."
+
 /**
  * Picks the next candidate bucket after `current` in wake-time scan order —
  * reusing ticket 005's `wakeOrderedBuckets`/`blockedBucketSet`
@@ -104,23 +116,43 @@ function pickMoveTarget(current: Bucket, wakeTime: string, blockedDates: string[
 }
 
 /**
- * Pure rule — no DB, no model, no network (ADR-0007). For the 2nd fall on a
- * slot, always proposes `MOVE` to a different bucket with `confidence: 1.0`
- * and non-empty `reasoning`. `excludeBuckets` lets a caller ask for a
- * revision that avoids a previously-proposed (and rejected) target —
- * `rejectAmendmentWithRevision` below is the only caller that uses it.
+ * Pure rule — no DB, no model, no network (ADR-0007).
  *
- * Throws for any `occurrence_in_slot` other than 2: this ticket's scope is
- * strictly the 2nd fall. Occurrence 3 (`REMOVE`) is ticket 013's extension
- * of this same function/contract, not a case silently handled here.
+ * Occurrence 2: always proposes `MOVE` to a different bucket with
+ * `confidence: 1.0` and non-empty `reasoning`. `excludeBuckets` lets a
+ * caller ask for a revision that avoids a previously-proposed (and
+ * rejected) target — `rejectAmendmentWithRevision` below is the only caller
+ * that uses it.
+ *
+ * Occurrence 3 (ticket 013, CONTEXT.md §9a's ladder — "the amendment was
+ * wrong, escalate to REMOVE"): always proposes `REMOVE` on the same
+ * commitment, `confidence: 1.0`, non-empty `reasoning`. No `params` —
+ * `REMOVE` has no magnitude to tune (CONTEXT.md §9d lists a magnitude only
+ * for `SHORTEN`/`REDUCE_FREQUENCY`/`EASE_NEXT_DAY`/`REALLOCATE`; `MOVE` and
+ * `REMOVE` are both magnitude-less). `excludeBuckets` is unused for this
+ * branch (nothing to avoid — `REMOVE` doesn't pick a bucket).
+ *
+ * Throws for any other `occurrence_in_slot` — this function's scope is
+ * strictly the 2nd and 3rd fall.
  */
 export function proposeAmendment(
   fallOff: FallOffAmendmentContext,
   excludeBuckets: Bucket[] = [],
 ): AmendmentProposal {
+  if (fallOff.occurrenceInSlot === 3) {
+    return {
+      action: 'REMOVE',
+      target: { commitment_id: fallOff.commitmentId },
+      params: {},
+      reasoning: REMOVE_REASONING,
+      confidence: 1.0,
+      proposed_by: 'rule',
+    }
+  }
+
   if (fallOff.occurrenceInSlot !== 2) {
     throw new Error(
-      `proposeAmendment (ticket 012) only handles occurrence_in_slot === 2 (got ${fallOff.occurrenceInSlot}) — the 3rd-fall REMOVE escalation is ticket 013's scope`,
+      `proposeAmendment only handles occurrence_in_slot 2 (MOVE) or 3 (REMOVE) — got ${fallOff.occurrenceInSlot}`,
     )
   }
 
@@ -144,13 +176,17 @@ interface FallOffRow {
 
 /**
  * Gathers everything `proposeAmendment` needs for this fall-off from the
- * DB: the slot's commitment + current bucket, the owning cycle's wake_time,
- * and that cycle's blocked dates. Read-only — no mutation.
+ * DB: the slot's commitment + current bucket, the owning cycle's wake_time
+ * + user_id, and that cycle's blocked dates. Read-only — no mutation.
+ * `userId` is returned alongside (not part of `FallOffAmendmentContext`,
+ * which stays exactly what the pure `proposeAmendment` rule needs) for the
+ * occurrence-3 `learnings` downgrade, which is scoped to `user_id` (ticket
+ * 013, docs/SPEC.md §2's `learnings` table).
  */
 async function loadAmendmentContext(
   client: SupabaseClient,
   fallOffId: string,
-): Promise<{ fallOff: FallOffRow; context: FallOffAmendmentContext }> {
+): Promise<{ fallOff: FallOffRow; context: FallOffAmendmentContext; userId: string }> {
   const { data: fallOffRow, error: fallOffError } = await client
     .from('fall_offs')
     .select('id, occurrence_in_slot, slot_id')
@@ -175,7 +211,7 @@ async function loadAmendmentContext(
 
   const { data: cycleRow, error: cycleError } = await client
     .from('cycles')
-    .select('wake_time')
+    .select('wake_time, user_id')
     .eq('id', cycleId)
     .single()
   if (cycleError) throw cycleError
@@ -196,7 +232,103 @@ async function loadAmendmentContext(
       occurrenceInSlot: fallOffRow.occurrence_in_slot,
       blockedDates: (blockedRows ?? []).map((b: { date: string }) => b.date),
     },
+    userId: (cycleRow as { user_id: string }).user_id,
   }
+}
+
+/**
+ * Fixed absolute confidence decrement applied to the `(user_id, tag_id,
+ * action)` `learnings` row when a 3rd fall proves that mapping's action
+ * choice wrong (CONTEXT.md §9a: "downgrade that tag→action mapping's
+ * confidence for this user"). Floored at 0 — confidence is never negative.
+ * 0.20 is a deliberately large single-event step (versus e.g. a smoothed
+ * running average): one instance of "we tried this action for this tag and
+ * the plan still failed" is exactly the kind of strong, cheap-to-collect
+ * signal CONTEXT.md §16 calls out as reversible/tunable-from-data later —
+ * see this ticket's Notes for the full reasoning and how to retune it.
+ */
+const LEARNING_DOWNGRADE_STEP = 0.2
+
+/**
+ * Occurrence-3 side effect (CONTEXT.md §9a): find the tag→action mapping
+ * that produced the now-proven-wrong 2nd-fall amendment for this slot, and
+ * reduce its `learnings` confidence. The "tag" is the 2nd fall's `tag_id`
+ * (the fall that *caused* the amendment now being escalated past) and the
+ * "action" is whatever was actually applied from that amendment — `action`
+ * normally, or `revised_action` if the user rejected the original proposal
+ * (both are always `MOVE` under ticket 012's deterministic rule, but this
+ * reads the real applied value rather than hardcoding that).
+ *
+ * Doubles as this ticket's explicit guard against a 3rd fall reaching this
+ * point without a prior 2nd-fall amendment: throws if no 2nd-fall
+ * `fall_offs` row, or no `amendments` row for it, exists for this slot.
+ * Via `recordFallOff`'s normal flow this is unreachable (occurrence 2
+ * always synchronously creates the fall_offs row *and* its amendments row
+ * before an occurrence-3 call is even possible — occurrence_in_slot is
+ * computed from real row counts), but this function is also reachable
+ * directly (as `proposeAmendmentForFallOff` is), so the guard is real, not
+ * decorative.
+ *
+ * Upserts a new `learnings` row at the DB default (`confidence: 0.50`)
+ * minus the step if none exists yet — 0.50 is the schema's own default for
+ * an as-yet-unobserved mapping (docs/SPEC.md §2), so a downgrade starting
+ * from "neutral, never observed" is the same default every other consumer
+ * of this table would read before this ticket's data ever existed.
+ */
+async function downgradeTagActionLearning(client: SupabaseClient, userId: string, slotId: string): Promise<void> {
+  const { data: secondFallOff, error: secondFallOffError } = await client
+    .from('fall_offs')
+    .select('id, tag_id')
+    .eq('slot_id', slotId)
+    .eq('occurrence_in_slot', 2)
+    .maybeSingle()
+  if (secondFallOffError) throw secondFallOffError
+  if (!secondFallOff) {
+    throw new Error(
+      `3rd fall on slot ${slotId} has no 2nd-fall fall_offs row — REMOVE requires a prior amendment at occurrence 2`,
+    )
+  }
+
+  const { data: secondAmendment, error: secondAmendmentError } = await client
+    .from('amendments')
+    .select('action, revised_action, user_response')
+    .eq('fall_off_id', secondFallOff.id)
+    .maybeSingle()
+  if (secondAmendmentError) throw secondAmendmentError
+  if (!secondAmendment) {
+    throw new Error(
+      `3rd fall on slot ${slotId}: the 2nd-fall fall_off ${secondFallOff.id} has no amendments row — REMOVE requires a prior amendment at occurrence 2`,
+    )
+  }
+
+  const appliedAction = (
+    secondAmendment.user_response === 'rejected' ? secondAmendment.revised_action : secondAmendment.action
+  ) as ActionType
+
+  const { data: existingLearning, error: learningError } = await client
+    .from('learnings')
+    .select('confidence, sample_size')
+    .eq('user_id', userId)
+    .eq('tag_id', secondFallOff.tag_id)
+    .eq('action', appliedAction)
+    .maybeSingle()
+  if (learningError) throw learningError
+
+  const baseConfidence = existingLearning?.confidence ?? 0.5
+  const nextConfidence = Math.max(0, Math.round((baseConfidence - LEARNING_DOWNGRADE_STEP) * 100) / 100)
+  const nextSampleSize = (existingLearning?.sample_size ?? 0) + 1
+
+  const { error: upsertError } = await client.from('learnings').upsert(
+    {
+      user_id: userId,
+      tag_id: secondFallOff.tag_id,
+      action: appliedAction,
+      confidence: nextConfidence,
+      sample_size: nextSampleSize,
+    },
+    { onConflict: 'user_id,tag_id,action' },
+  )
+  if (upsertError) throw upsertError
 }
 
 export interface ProposeAmendmentResult {
@@ -208,16 +340,30 @@ export interface ProposeAmendmentResult {
  * DB-touching orchestrator: loads this fall-off's slot/commitment/cycle
  * context, computes the pure `proposeAmendment` proposal, and inserts one
  * `amendments` row with `user_response` left null (unresolved). Does **not**
- * itself change the commitment's `bucket` — per ADR-0004, code only
- * "disposes" once the user has actually responded via `acceptAmendment` or
- * `rejectAmendmentWithRevision`.
+ * itself change the commitment's `bucket`/removal state — per ADR-0004,
+ * code only "disposes" once the user has actually responded via
+ * `acceptAmendment` or `rejectAmendmentWithRevision`.
+ *
+ * At occurrence 3 only, also runs the `learnings` confidence downgrade
+ * (`downgradeTagActionLearning`, ticket 013, CONTEXT.md §9a). This is
+ * deliberately *not* gated behind the user accepting/rejecting the `REMOVE`
+ * proposal: unlike a commitment mutation (which ADR-0004 requires stay
+ * pending until disposed), "this tag→action mapping's prior application
+ * failed" is a fact about what already happened, established the moment
+ * the 3rd fall_offs row exists — the same trigger point ticket 010's
+ * reliability-map triggers react to raw fall_offs/completions inserts
+ * regardless of any later amendment outcome.
  */
 export async function proposeAmendmentForFallOff(
   client: SupabaseClient,
   fallOffId: string,
 ): Promise<ProposeAmendmentResult> {
-  const { fallOff, context } = await loadAmendmentContext(client, fallOffId)
+  const { fallOff, context, userId } = await loadAmendmentContext(client, fallOffId)
   const proposal = proposeAmendment(context)
+
+  if (proposal.action === 'REMOVE') {
+    await downgradeTagActionLearning(client, userId, fallOff.slot_id)
+  }
 
   const { data: inserted, error } = await client
     .from('amendments')
@@ -239,10 +385,21 @@ export async function proposeAmendmentForFallOff(
 
 /**
  * "Code disposes" (ADR-0004): the only place a proposal actually mutates a
- * commitment. Scoped to `MOVE` only — this ticket's rule never proposes
- * anything else, and executing the rest of the enum is ticket 013
- * (`REMOVE`) / 014 (cycle-wide)'s concern, each meant to extend this same
- * switch rather than duplicate it.
+ * commitment. `MOVE` (ticket 012) and `REMOVE` (ticket 013) are in scope;
+ * the rest of the enum is ticket 014 (cycle-wide)'s concern, meant to
+ * extend this same switch rather than duplicate it.
+ *
+ * `REMOVE` is a soft-delete (`commitments.removed_at`, migration
+ * `20260802020000_commitments_removed_at.sql`) — never a hard `delete from
+ * commitments`, which would cascade-delete `slots` and hit `fall_offs`'
+ * un-cascaded FK to `slots`, destroying fall-off/amendment history a hard
+ * delete has no way to preserve (see that migration's comment). Alongside
+ * the soft-delete, this deletes the commitment's still-`pending` slots —
+ * "future un-completed slots" per this ticket's DoD; `pending` is the only
+ * non-terminal `slots.status` value, so it's the correct filter for
+ * "future and un-completed" without needing an explicit date comparison.
+ * Slots already `completed`/`fell_off`/`excused` are left untouched — they
+ * are exactly the history this whole soft-delete design exists to keep.
  */
 async function applyAction(
   client: SupabaseClient,
@@ -258,9 +415,24 @@ async function applyAction(
       if (error) throw error
       return
     }
+    case 'REMOVE': {
+      const { error: removeError } = await client
+        .from('commitments')
+        .update({ removed_at: new Date().toISOString() })
+        .eq('id', target.commitment_id)
+      if (removeError) throw removeError
+
+      const { error: slotsError } = await client
+        .from('slots')
+        .delete()
+        .eq('commitment_id', target.commitment_id)
+        .eq('status', 'pending')
+      if (slotsError) throw slotsError
+      return
+    }
     default:
       throw new Error(
-        `applyAction: action '${action}' is not handled by ticket 012's amendment path (only MOVE is in scope here)`,
+        `applyAction: action '${action}' is not handled by this amendment path yet (only MOVE/REMOVE are in scope)`,
       )
   }
 }

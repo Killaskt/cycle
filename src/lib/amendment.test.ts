@@ -94,7 +94,7 @@ describe('proposeAmendment', () => {
     expect(revision.params.bucket).not.toBe('weekday_morning')
   })
 
-  it('throws for any occurrence other than 2 (out of this ticket\'s scope)', () => {
+  it('throws for any occurrence other than 2 or 3', () => {
     expect(() =>
       proposeAmendment({
         commitmentId: 'commitment-1',
@@ -102,15 +102,61 @@ describe('proposeAmendment', () => {
         wakeTime: '06:30',
         occurrenceInSlot: 1,
       }),
-    ).toThrow(/occurrence_in_slot === 2/)
+    ).toThrow(/occurrence_in_slot 2 \(MOVE\) or 3 \(REMOVE\)/)
 
     expect(() =>
       proposeAmendment({
         commitmentId: 'commitment-1',
         currentBucket: 'weekday_morning',
         wakeTime: '06:30',
-        occurrenceInSlot: 3,
+        occurrenceInSlot: 4,
       }),
-    ).toThrow(/ticket 013/)
+    ).toThrow(/occurrence_in_slot 2 \(MOVE\) or 3 \(REMOVE\)/)
+  })
+})
+
+// Ticket 013: occurrence 3 -> REMOVE (CONTEXT.md §9a's "the amendment was
+// wrong, escalate to REMOVE"). Pure-function tests only — the `learnings`
+// downgrade and the actual commitment/slot mutation are DB-touching and
+// covered in src/test/integration/fallOff.test.ts.
+describe('proposeAmendment — occurrence 3 (ticket 013)', () => {
+  it('always proposes REMOVE, confidence 1.0, non-empty reasoning, proposed_by rule, no params', () => {
+    const proposal = proposeAmendment({
+      commitmentId: 'commitment-1',
+      currentBucket: 'weekday_morning',
+      wakeTime: '06:30',
+      occurrenceInSlot: 3,
+    })
+
+    expect(proposal.action).toBe('REMOVE')
+    expect(proposal.confidence).toBe(1.0)
+    expect(proposal.proposed_by).toBe('rule')
+    expect(proposal.target).toEqual({ commitment_id: 'commitment-1' })
+    expect(proposal.params).toEqual({})
+    expect(typeof proposal.reasoning).toBe('string')
+    expect(proposal.reasoning.length).toBeGreaterThan(0)
+  })
+
+  it('is deterministic — identical inputs always produce identical output', () => {
+    const input = {
+      commitmentId: 'commitment-1',
+      currentBucket: 'weekday_morning' as const,
+      wakeTime: '06:30',
+      occurrenceInSlot: 3,
+    }
+
+    expect(proposeAmendment(input)).toEqual(proposeAmendment(input))
+  })
+
+  it('reasoning never attributes failure to the person (CONTEXT.md §9e)', () => {
+    const proposal = proposeAmendment({
+      commitmentId: 'commitment-1',
+      currentBucket: 'weekday_morning',
+      wakeTime: '06:30',
+      occurrenceInSlot: 3,
+    })
+
+    expect(proposal.reasoning.toLowerCase()).not.toMatch(/you (should|didn't|failed|need to)/)
+    expect(proposal.reasoning).toMatch(/not you/i)
   })
 })

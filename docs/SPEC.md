@@ -68,7 +68,10 @@ create table commitments (
   bucket bucket not null,
   rationale text,                            -- null when the deterministic fallback produced this row
   from_fallback boolean not null default false,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  removed_at timestamptz                     -- null = active. Set by REMOVE (ticket 013, CONTEXT.md §9a's
+                                              -- 3rd-fall escalation) — soft-delete, never a hard `delete`,
+                                              -- since fall_offs/amendments history must survive.
 );
 
 create table slots (
