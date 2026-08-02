@@ -50,6 +50,18 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 **Confidence:** low
 **Status:** open
 
+## [007] Blocked-date handling: skip vs. reschedule, and per-commitment vs. cycle-wide — 2026-08-02 09:30
+**Question:** The ticket says to "skip/reschedule an affected date rather than double-booking it" without picking one, and `blocked_windows.affected_slot_id` is nullable ("something came up" may or may not target a specific slot) but at materialization time no slots exist yet for the cycle to reference, so it's unclear whether a blocked date should exclude only the commitment tied to a specific slot or all commitments scheduling that day.
+**Assumption made:** (1) Skip, not reschedule-to-a-specific-makeup-day: a blocked date is removed from that week's eligible-day pool *before* `freq` days are picked, so materialization opportunistically fills `freq` from the remaining eligible days that week if there are enough, but never invents a rule for *which* specific day to bump a displaced occurrence to. (2) Treat every `blocked_windows` row for the cycle as blocking that date for *all* commitments (cycle-wide), not just one — since `affected_slot_id` can't yet point at anything real pre-materialization, the only information available is the date itself. Reasoning: both are the more conservative, simpler, fully reversible reading; a future ticket can add per-commitment targeting once `affected_slot_id` is populated post-materialization.
+**Confidence:** medium
+**Status:** open
+
+## [007] Slot materialization idempotency: reject vs. no-op — 2026-08-02 09:30
+**Question:** DoD says "Re-running materialization for the same cycle is a no-op or explicitly rejected — pick one and assert it," without specifying which.
+**Assumption made:** Explicitly rejected — `materializeCycleSlots` throws if any slot already exists for the cycle's commitments, rather than silently skipping. Reasoning: a silent no-op could mask a caller bug (e.g. calling it twice with different commitment data expecting an update) whereas a thrown error surfaces the double-call immediately; this is also the more conservative/reversible choice per the CLARIFICATIONS rule since callers can always catch-and-ignore if a no-op turns out to be preferred later.
+**Confidence:** medium
+**Status:** open
+
 ## [003] Ceiling back-off granularity ("back off ... by one step") — 2026-08-02 08:20
 **Question:** CONTEXT.md §5's back-off loop says "back off the goal contributing the most added minutes, by one step" but a goal has two independent deltas — a frequency step (`step`, 1-2) and a duration step (`dur_step`, 5-15 minutes) — and the spec doesn't say which one "one step" refers to when a goal has both, or what unit governs retreating the duration side.
 **Assumption made:** Per selected goal, retreat the frequency step to 0 one unit at a time first; only once a goal's frequency step is fully retreated does its duration step begin retreating, one minute at a time. This is deterministic, reversible, and guarantees the loop terminates with `load <= ceiling`: once every goal's `freqStep` and `durStep` are both 0, `load == Σ(currentFreq × currentDur)`, which is always `<= ceiling` since `ceiling` is that same sum × 1.15. Implemented in `src/lib/generationMath.ts` (`applyCeiling`).

@@ -1,7 +1,7 @@
 ---
 id: 007
 title: Slot materialization from commitments across the cycle window
-status: open
+status: done
 blocked_by: [001]
 ---
 
