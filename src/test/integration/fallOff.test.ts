@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_URL } from './localSupabase'
 import { recordFallOff } from '../../lib/fallOff'
+import { acceptAmendment, rejectAmendmentWithRevision } from '../../lib/amendment'
 
 // Ticket 011 DoD, exercised against the real local stack (RLS included):
 // - Submitting a 1st fall-off creates a fall_offs row with
@@ -162,6 +163,7 @@ describe('recordFallOff', () => {
       slotId: slot.id,
       whatHappened: 'Overslept again.',
       tag: { label: 'tired' },
+      mood: 'frustrated',
     })
     expect(second.occurrenceInSlot).toBe(2)
 
@@ -226,5 +228,165 @@ describe('recordFallOff', () => {
         tag: { label: 'tired', classification: 'motivation' },
       }),
     ).rejects.toThrow(/what_happened is required/)
+  })
+})
+
+// Ticket 012 DoD, exercised against the real local stack (RLS included):
+// - 2nd fall on a slot requires (and writes) mood; 1st fall never does.
+// - proposeAmendment always returns MOVE, confidence 1.0, non-empty
+//   reasoning, proposed_by 'rule' — logged as an unresolved `amendments` row.
+// - Accepting applies the MOVE for real: the commitment's bucket actually
+//   changes in the DB.
+// - Rejecting with a reason logs rejection_reason + revised_action/target/
+//   params (still MOVE, a different bucket) and applies that revision.
+describe('recordFallOff — 2nd occurrence, The Amendment (ticket 012)', () => {
+  async function fallOffTwice(label: string, secondMood?: string) {
+    const setup = await setUpCycleWithSlots(label, ['2026-08-04'])
+    const slot = setup.slots[0]
+
+    await recordFallOff(setup.client, setup.userId, {
+      slotId: slot.id,
+      whatHappened: 'Overslept.',
+      tag: { label: 'tired', classification: 'motivation' },
+    })
+
+    const second = await recordFallOff(setup.client, setup.userId, {
+      slotId: slot.id,
+      whatHappened: 'Overslept again.',
+      tag: { label: 'tired' },
+      mood: secondMood ?? 'discouraged',
+    })
+
+    return { ...setup, slot, second }
+  }
+
+  it('requires mood on the 2nd fall-off for this slot', async () => {
+    const { userId, client, slots } = await setUpCycleWithSlots('fall-off-mood-required', [
+      '2026-08-04',
+    ])
+    const slot = slots[0]
+
+    await recordFallOff(client, userId, {
+      slotId: slot.id,
+      whatHappened: 'Overslept.',
+      tag: { label: 'tired', classification: 'motivation' },
+    })
+
+    await expect(
+      recordFallOff(client, userId, {
+        slotId: slot.id,
+        whatHappened: 'Overslept again.',
+        tag: { label: 'tired' },
+      }),
+    ).rejects.toThrow(/mood is required/)
+  })
+
+  it('writes mood on the 2nd fall, leaves agent_followup_* null, and creates an unresolved MOVE proposal', async () => {
+    const { second, commitment } = await fallOffTwice('fall-off-amendment-propose', 'discouraged')
+
+    expect(second.occurrenceInSlot).toBe(2)
+    expect(second.amendment).toBeTruthy()
+    expect(second.amendment?.proposal).toMatchObject({
+      action: 'MOVE',
+      target: { commitment_id: commitment.id },
+      confidence: 1.0,
+      proposed_by: 'rule',
+    })
+    expect(second.amendment?.proposal.reasoning.length).toBeGreaterThan(0)
+
+    const { data: fallOffRow, error: fallOffError } = await admin
+      .from('fall_offs')
+      .select('mood, agent_followup_question, agent_followup_answer')
+      .eq('id', second.fallOffId)
+      .single()
+    expect(fallOffError).toBeNull()
+    expect(fallOffRow).toMatchObject({
+      mood: 'discouraged',
+      agent_followup_question: null,
+      agent_followup_answer: null,
+    })
+
+    const { data: amendmentRow, error: amendmentError } = await admin
+      .from('amendments')
+      .select('*')
+      .eq('fall_off_id', second.fallOffId)
+      .single()
+    expect(amendmentError).toBeNull()
+    expect(amendmentRow).toMatchObject({
+      action: 'MOVE',
+      user_response: null,
+      proposed_by: 'rule',
+    })
+    expect(amendmentRow?.target).toMatchObject({ commitment_id: commitment.id })
+    expect(amendmentRow?.params.bucket).toBe('weekday_early_morning')
+  })
+
+  it('accepting the amendment applies the MOVE to the commitment bucket for real', async () => {
+    const { second, commitment, client } = await fallOffTwice('fall-off-amendment-accept')
+    const amendmentId = second.amendment!.amendmentId
+
+    await acceptAmendment(client, amendmentId)
+
+    const { data: updatedCommitment, error: commitmentError } = await client
+      .from('commitments')
+      .select('bucket')
+      .eq('id', commitment.id)
+      .single()
+    expect(commitmentError).toBeNull()
+    expect(updatedCommitment?.bucket).toBe(second.amendment!.proposal.params.bucket)
+    expect(updatedCommitment?.bucket).not.toBe('weekday_morning')
+
+    const { data: amendmentRow, error: amendmentError } = await client
+      .from('amendments')
+      .select('user_response')
+      .eq('id', amendmentId)
+      .single()
+    expect(amendmentError).toBeNull()
+    expect(amendmentRow?.user_response).toBe('accepted')
+
+    await expect(acceptAmendment(client, amendmentId)).rejects.toThrow(/already has a user_response/)
+  })
+
+  it('rejecting with a reason logs the rejection + a different deterministic revision, and applies that revision', async () => {
+    const { second, commitment, client } = await fallOffTwice('fall-off-amendment-reject')
+    const amendmentId = second.amendment!.amendmentId
+    const originalBucket = second.amendment!.proposal.params.bucket
+
+    const revision = await rejectAmendmentWithRevision(client, amendmentId, "that time doesn't work either")
+
+    expect(revision.action).toBe('MOVE')
+    expect(revision.params.bucket).not.toBe(originalBucket)
+    expect(revision.params.bucket).not.toBe('weekday_morning')
+
+    const { data: amendmentRow, error: amendmentError } = await client
+      .from('amendments')
+      .select('*')
+      .eq('id', amendmentId)
+      .single()
+    expect(amendmentError).toBeNull()
+    expect(amendmentRow).toMatchObject({
+      user_response: 'rejected',
+      rejection_reason: "that time doesn't work either",
+      revised_action: 'MOVE',
+    })
+    expect(amendmentRow?.revised_target).toMatchObject({ commitment_id: commitment.id })
+    expect(amendmentRow?.revised_params.bucket).toBe(revision.params.bucket)
+
+    const { data: updatedCommitment, error: commitmentError } = await client
+      .from('commitments')
+      .select('bucket')
+      .eq('id', commitment.id)
+      .single()
+    expect(commitmentError).toBeNull()
+    expect(updatedCommitment?.bucket).toBe(revision.params.bucket)
+  })
+
+  it('rejecting requires a non-empty reason', async () => {
+    const { second, client } = await fallOffTwice('fall-off-amendment-reject-empty')
+    const amendmentId = second.amendment!.amendmentId
+
+    await expect(rejectAmendmentWithRevision(client, amendmentId, '   ')).rejects.toThrow(
+      /rejection_reason is required/,
+    )
   })
 })

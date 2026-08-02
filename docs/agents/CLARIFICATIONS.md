@@ -32,11 +32,17 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 
 ## Log
 
+## [012] Rejected amendment's revision: apply immediately, or leave pending for a further round? — 2026-08-02 16:40
+**Question:** ADR-0007 describes reject-with-reason as producing "one revision," but neither `CONTEXT.md` §9b nor `docs/SPEC.md` §4 says whether that revision is applied to the commitment right away, or left as a second pending proposal the user must separately accept/reject (with MVP having no further UI round-trip specified for re-offering it).
+**Assumption made:** `rejectAmendmentWithRevision` (`src/lib/amendment.ts`) applies the revision immediately — same `applyAction` "code disposes" path `acceptAmendment` uses — rather than leaving it pending. Reasoning: MVP's deterministic rule always produces a valid, guardrail-respecting `MOVE` (never a proposal that could reasonably need re-rejecting), so a second pending round adds UI/state surface with no real decision left to make; a future live-agent revision could still choose to leave its own output pending, this doesn't box that in — it only decides the current deterministic rule's behavior.
+**Confidence:** medium
+**Status:** open
+
 ## [context-doc] Exact field split between 1st and 2nd fall-off — 2026-08-02 09:00
 **Question:** `docs/oneDoc.md` §6's escalation table says the 1st fall captures "tag + what happened," while its "what the survey asks" section separately lists four fields (auto-filled slot, freeform, tag, mood) without stating which occurrence(s) they apply to.
 **Assumption made:** 1st fall = auto-filled slot (silent) + tag + freeform "what happened" only — no mood tap, no agent follow-up question, no plan change. Mood tap and the possible one agent follow-up question apply starting at the 2nd fall (the Amendment), alongside the same tag + freeform fields. Reasoning: the escalation table explicitly says "no survey" for the 1st fall, and reserves the fuller field set for when it actually needs to inform an amendment decision.
 **Confidence:** medium
-**Status:** open — ticket 011 (`src/lib/fallOff.ts`) built and DoD-verified exactly the 1st-fall half of this split (`mood` always written `null`, no `agent_followup_*`, no `amendments` row on occurrence 1). Left `open` rather than `resolved` because the other half — mood tap + optional agent follow-up starting at the 2nd fall — is still ticket 012's to build and verify; flip to `resolved` once 012 confirms that half too.
+**Status:** resolved — ticket 012 (`src/lib/fallOff.ts`, extended) confirmed the 2nd-fall half: `mood` is now required (throws if missing/blank) exactly at `occurrence_in_slot === 2`, and an `amendments` row (a `MOVE` proposal) is created at that same occurrence via `proposeAmendmentForFallOff`. The "at most one agent-chosen follow-up question" piece of the 2nd-fall field set was deliberately **not** built — it requires pattern-detection over prior fall-off history and is model-shaped, out of scope for the deterministic MVP amendment path (ADR-0007). `agent_followup_question`/`agent_followup_answer` stay `null` at every occurrence until a future ticket adds that capability. Both halves of the original question are now verified in code and tests.
 
 ## [context-doc] Cycle-wide overload response when falls are spread evenly (volume problem) — 2026-08-02 09:00
 **Question:** The source conversation floated two alternative responses to a volume-type cycle-wide overload trigger — "apply REDUCE_FREQUENCY across the board" or "drop the lowest-completion goal entirely" — without picking between them.

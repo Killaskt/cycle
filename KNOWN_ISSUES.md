@@ -18,6 +18,12 @@ This is for real bugs with a real fix applied — not open design questions (`do
 
 ## Log
 
+## `supabase_vector` container restart-loops on Windows Docker Desktop — infra — 2026-08-02
+**Symptom:** `docker ps` shows `supabase_vector_<project>` stuck in `Restarting (0) Ns ago` indefinitely, even right after a clean `supabase stop && supabase start`.
+**Root cause:** Vector's `docker_logs` source tries to reach the Docker Engine API to list running containers for log collection and gets `NetworkUnreachable` — a Docker Desktop-for-Windows networking quirk with this stack, not a project misconfiguration.
+**Fix:** None needed — it's log aggregation only (feeds Studio's logs viewer via Logflare). Auth/Postgres/PostgREST/Edge Functions are unaffected and report healthy independently; confirmed via direct `curl` to the `generate` function returning a real HTTP status (401 unauthenticated) rather than a gateway 503.
+**Watch for:** If a test suite run shows real 503s from Kong/the functions gateway (not just `vector` restart-looping), that's the actual signal to `supabase stop && supabase start` per the `run-checks` skill — don't spend time trying to fix `vector` itself, it's a known-benign quirk on this OS.
+
 ## RLS policies alone don't grant table access — 001 — 2026-08-02
 **Symptom:** After creating all tables + RLS policies, every PostgREST request from an `authenticated` client failed with `permission denied for table cycles` (code `42501`), even though the RLS policy itself was correct.
 **Root cause:** Enabling RLS and adding a policy only controls *row* visibility once a role already has table-level privileges. This local stack's migration user doesn't come with `anon`/`authenticated`/`service_role` pre-granted on newly created tables in `public` — Supabase's hosted projects set this up as part of project provisioning, but a from-scratch local migration has to do it explicitly.
