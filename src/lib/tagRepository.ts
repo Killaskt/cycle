@@ -20,7 +20,10 @@ export interface Tag {
   created_at: string
 }
 
-const DISINTEREST_LABEL = 'disinterest'
+// Exported: ticket 016's disinterest exposure gate (src/lib/amendment.ts)
+// needs the canonical label to recognize this tag without hand-duplicating
+// the literal.
+export const DISINTEREST_LABEL = 'disinterest'
 const DISINTEREST_CLASSIFICATION: TagClassification = 'motivation'
 
 // Below this normalized-similarity, two labels are treated as different

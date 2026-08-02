@@ -546,6 +546,100 @@ describe('recordFallOff — 3rd occurrence, downscope to REMOVE (ticket 013)', (
     expect(learningRow?.confidence).toBeLessThan(0.5)
   })
 
+  // Ticket 016 DoD, exercised against the real local stack (RLS included):
+  // - A 3rd fall tagged `disinterest` (the *2nd* fall's tag, per
+  //   CLARIFICATIONS.md [016]/[013]) with fewer than 3 prior completions on
+  //   the commitment downgrades to MOVE instead of REMOVE.
+  // - The identical scenario with 3+ prior completions allows REMOVE
+  //   normally.
+  // - A 3rd fall tagged with anything other than `disinterest` is
+  //   unaffected by this gate — already covered by the 'tired'-tagged tests
+  //   above (`fall-off-third-*`), all of which run with 0 completions and
+  //   still assert REMOVE.
+  describe('recordFallOff — 3rd occurrence, disinterest exposure gate (ticket 016)', () => {
+    async function fallOffThreeTimesWithDisinterest(label: string, priorCompletions: number) {
+      const setup = await setUpCycleWithSlots(label, ['2026-08-04', '2026-08-11'])
+      const slot = setup.slots[0]
+
+      for (let i = 0; i < priorCompletions; i++) {
+        const { error } = await setup.client.from('completions').insert({ slot_id: slot.id })
+        if (error) throw error
+      }
+
+      const first = await recordFallOff(setup.client, setup.userId, {
+        slotId: slot.id,
+        whatHappened: 'Just did not want to.',
+        tag: { label: 'disinterest' },
+      })
+
+      const second = await recordFallOff(setup.client, setup.userId, {
+        slotId: slot.id,
+        whatHappened: 'Still not feeling it.',
+        tag: { label: 'disinterest' },
+        mood: 'indifferent',
+      })
+      await acceptAmendment(setup.client, second.amendment!.amendmentId)
+
+      const third = await recordFallOff(setup.client, setup.userId, {
+        slotId: slot.id,
+        whatHappened: 'Third time, still not feeling it.',
+        tag: { label: 'disinterest' },
+      })
+
+      return { ...setup, slot, first, second, third }
+    }
+
+    it('fewer than 3 prior completions: downgrades the 3rd-fall proposal to MOVE instead of REMOVE', async () => {
+      const { third, commitment } = await fallOffThreeTimesWithDisinterest('fall-off-disinterest-gated', 2)
+
+      expect(third.occurrenceInSlot).toBe(3)
+      expect(third.amendment).toBeTruthy()
+      expect(third.amendment?.proposal).toMatchObject({
+        action: 'MOVE',
+        target: { commitment_id: commitment.id },
+        confidence: 1.0,
+        proposed_by: 'rule',
+      })
+      expect(third.amendment?.proposal.params.bucket).toBeTruthy()
+      expect(third.amendment?.proposal.reasoning.length).toBeGreaterThan(0)
+
+      const { data: commitmentRow, error } = await admin
+        .from('commitments')
+        .select('removed_at')
+        .eq('id', commitment.id)
+        .single()
+      expect(error).toBeNull()
+      expect(commitmentRow?.removed_at).toBeNull()
+    })
+
+    it('3+ prior completions: allows REMOVE normally, gate does not apply', async () => {
+      const { third, commitment } = await fallOffThreeTimesWithDisinterest('fall-off-disinterest-ungated', 3)
+
+      expect(third.occurrenceInSlot).toBe(3)
+      expect(third.amendment?.proposal).toMatchObject({
+        action: 'REMOVE',
+        target: { commitment_id: commitment.id },
+        confidence: 1.0,
+        proposed_by: 'rule',
+      })
+    })
+
+    it('still downgrades the learnings row even when the gate downgrades REMOVE to MOVE', async () => {
+      const { third, userId, second } = await fallOffThreeTimesWithDisinterest('fall-off-disinterest-learnings', 0)
+      expect(third.amendment?.proposal.action).toBe('MOVE')
+
+      const { data: learningRow, error } = await admin
+        .from('learnings')
+        .select('confidence')
+        .eq('user_id', userId)
+        .eq('tag_id', second.tagId)
+        .eq('action', 'MOVE')
+        .single()
+      expect(error).toBeNull()
+      expect(learningRow?.confidence).toBeLessThan(0.5)
+    })
+  })
+
   it('a 3rd fall reaching the amendment path with no prior 2nd-fall amendment is explicitly rejected, not silently REMOVEd', async () => {
     const { userId, client, cycle, slots } = await setUpCycleWithSlots('fall-off-third-no-second', [
       '2026-08-04',

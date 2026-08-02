@@ -11,16 +11,18 @@
 // the same guarantee a future model-based proposer gets for free by sitting
 // behind this same contract.
 //
-// Ticket 012 built `occurrence_in_slot === 2` -> `MOVE`. Ticket 013 (this
-// extension) adds `occurrence_in_slot === 3` -> `REMOVE` (CONTEXT.md §9a's
-// ladder: "the amendment was wrong, escalate to REMOVE") plus the
-// tag→action `learnings` confidence downgrade CONTEXT.md §9a calls for at
-// that same occurrence. Cycle-wide overload (§9c) is ticket 014's, still not
-// built here. The disinterest-tag exposure gate (CONTEXT.md §9a: "cannot
-// trigger REMOVE before 3 completed sessions") is ticket 016's override of
-// this ticket's plain REMOVE — 016 is blocked_by [004, 012], not by 013, so
-// it lands *after* this ticket and overrides its output; nothing here
-// implements that gate.
+// Ticket 012 built `occurrence_in_slot === 2` -> `MOVE`. Ticket 013 adds
+// `occurrence_in_slot === 3` -> `REMOVE` (CONTEXT.md §9a's ladder: "the
+// amendment was wrong, escalate to REMOVE") plus the tag→action `learnings`
+// confidence downgrade CONTEXT.md §9a calls for at that same occurrence.
+// Cycle-wide overload (§9c) is ticket 014's, still not built here.
+//
+// Ticket 016 (this extension) adds the disinterest-tag exposure gate
+// (CONTEXT.md §9a: "cannot trigger REMOVE before 3 completed sessions") in
+// front of 013's unconditional occurrence-3 REMOVE — see
+// `applyDisinterestExposureGate` below. Applied both where a fresh proposal
+// is created (`proposeAmendmentForFallOff`) and where a rejected proposal is
+// revised (`rejectAmendmentWithRevision`), so neither path can bypass it.
 //
 // The "at most one agent-chosen follow-up question" mechanic (CONTEXT.md
 // §9a: "only if a hypothesis is worth testing... e.g. 3 morning falls tagged
@@ -34,6 +36,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Bucket } from './slots'
 import { blockedBucketSet, wakeOrderedBuckets } from '../../supabase/functions/generate/bucketOrder'
+import { DISINTEREST_LABEL, normalizeLabel } from './tagRepository'
 
 /**
  * ADR-0004's bounded `ActionType` enum, defined once here in application
@@ -249,6 +252,42 @@ async function loadAmendmentContext(
  */
 const LEARNING_DOWNGRADE_STEP = 0.2
 
+interface SecondFallOffTag {
+  fallOffId: string
+  tagId: string
+}
+
+/**
+ * Shared by `downgradeTagActionLearning` (ticket 013) and
+ * `applyDisinterestExposureGate` (ticket 016) — both need "the 2nd fall's
+ * tag," per the same reasoning docs/agents/CLARIFICATIONS.md's [013] "Which
+ * tag→action mapping gets downgraded on a 3rd fall" entry already settled:
+ * that's the tag/action pair the now-proven-wrong 2nd-fall amendment traces
+ * back to, not the 3rd fall's own tag (which by definition hasn't yet been
+ * associated with any amendment/action). Ticket 016 reuses this same
+ * reasoning for "the relevant tag" its gate checks, for consistency rather
+ * than re-deriving a different answer.
+ *
+ * Throws if no 2nd-fall `fall_offs` row exists for this slot — doubles as
+ * ticket 013's guard against a 3rd fall reaching this point without a prior
+ * 2nd-fall amendment (see callers' docs).
+ */
+async function getSecondFallOffTag(client: SupabaseClient, slotId: string): Promise<SecondFallOffTag> {
+  const { data: secondFallOff, error } = await client
+    .from('fall_offs')
+    .select('id, tag_id')
+    .eq('slot_id', slotId)
+    .eq('occurrence_in_slot', 2)
+    .maybeSingle()
+  if (error) throw error
+  if (!secondFallOff) {
+    throw new Error(
+      `3rd fall on slot ${slotId} has no 2nd-fall fall_offs row — REMOVE requires a prior amendment at occurrence 2`,
+    )
+  }
+  return { fallOffId: secondFallOff.id, tagId: secondFallOff.tag_id }
+}
+
 /**
  * Occurrence-3 side effect (CONTEXT.md §9a): find the tag→action mapping
  * that produced the now-proven-wrong 2nd-fall amendment for this slot, and
@@ -276,28 +315,17 @@ const LEARNING_DOWNGRADE_STEP = 0.2
  * of this table would read before this ticket's data ever existed.
  */
 async function downgradeTagActionLearning(client: SupabaseClient, userId: string, slotId: string): Promise<void> {
-  const { data: secondFallOff, error: secondFallOffError } = await client
-    .from('fall_offs')
-    .select('id, tag_id')
-    .eq('slot_id', slotId)
-    .eq('occurrence_in_slot', 2)
-    .maybeSingle()
-  if (secondFallOffError) throw secondFallOffError
-  if (!secondFallOff) {
-    throw new Error(
-      `3rd fall on slot ${slotId} has no 2nd-fall fall_offs row — REMOVE requires a prior amendment at occurrence 2`,
-    )
-  }
+  const { fallOffId: secondFallOffId, tagId: secondFallOffTagId } = await getSecondFallOffTag(client, slotId)
 
   const { data: secondAmendment, error: secondAmendmentError } = await client
     .from('amendments')
     .select('action, revised_action, user_response')
-    .eq('fall_off_id', secondFallOff.id)
+    .eq('fall_off_id', secondFallOffId)
     .maybeSingle()
   if (secondAmendmentError) throw secondAmendmentError
   if (!secondAmendment) {
     throw new Error(
-      `3rd fall on slot ${slotId}: the 2nd-fall fall_off ${secondFallOff.id} has no amendments row — REMOVE requires a prior amendment at occurrence 2`,
+      `3rd fall on slot ${slotId}: the 2nd-fall fall_off ${secondFallOffId} has no amendments row — REMOVE requires a prior amendment at occurrence 2`,
     )
   }
 
@@ -309,7 +337,7 @@ async function downgradeTagActionLearning(client: SupabaseClient, userId: string
     .from('learnings')
     .select('confidence, sample_size')
     .eq('user_id', userId)
-    .eq('tag_id', secondFallOff.tag_id)
+    .eq('tag_id', secondFallOffTagId)
     .eq('action', appliedAction)
     .maybeSingle()
   if (learningError) throw learningError
@@ -321,7 +349,7 @@ async function downgradeTagActionLearning(client: SupabaseClient, userId: string
   const { error: upsertError } = await client.from('learnings').upsert(
     {
       user_id: userId,
-      tag_id: secondFallOff.tag_id,
+      tag_id: secondFallOffTagId,
       action: appliedAction,
       confidence: nextConfidence,
       sample_size: nextSampleSize,
@@ -329,6 +357,74 @@ async function downgradeTagActionLearning(client: SupabaseClient, userId: string
     { onConflict: 'user_id,tag_id,action' },
   )
   if (upsertError) throw upsertError
+}
+
+// CONTEXT.md §9a: "disinterest... cannot trigger REMOVE before 3 completed
+// sessions" (locked number).
+const MINIMUM_COMPLETIONS_BEFORE_REMOVE = 3
+
+// CONTEXT.md §9e: describe the plan as wrong, never the person; copy
+// escalates in directness, not interrogation. This sits *between* the 2nd
+// fall's MOVE and the full REMOVE — the plan gets one more honest change
+// before removal is back on the table.
+const DISINTEREST_GATE_REASONING =
+  "This has fallen off a third time and is tagged as not clicking for you yet — but it hasn't had enough real tries to justify removing it. Moving it to a different time of day gives the plan one more honest chance before we consider cutting it."
+
+/**
+ * CONTEXT.md §9a's disinterest exposure gate (ticket 016): the `disinterest`
+ * tag cannot trigger `REMOVE` before 3 completed sessions of the commitment.
+ * Only relevant when the pure rule already proposed `REMOVE` (occurrence 3)
+ * — any other action passes through untouched.
+ *
+ * "The relevant tag" is the 2nd fall's tag (`getSecondFallOffTag`), per the
+ * same reasoning ticket 013 already established for the learnings downgrade
+ * — see that function's doc comment. Not the 3rd fall's own tag.
+ *
+ * Downgrades to `MOVE`, not `REDUCE_FREQUENCY` (the ticket's DoD allows
+ * either): `applyAction`'s switch has no `REDUCE_FREQUENCY` case yet (ticket
+ * 014 will likely add one for cycle-wide overload), and `MOVE` alone already
+ * satisfies the DoD, so this avoids touching that switch/case list and any
+ * collision risk with 014. `MOVE` is also already the exact mechanism this
+ * slot fell back to once before at occurrence 2, so reusing it here needs no
+ * new machinery — just a fresh bucket pick via the same `pickMoveTarget`
+ * occurrence-2 already uses.
+ */
+async function applyDisinterestExposureGate(
+  client: SupabaseClient,
+  proposal: AmendmentProposal,
+  context: FallOffAmendmentContext,
+  slotId: string,
+  excludeBuckets: Bucket[],
+): Promise<AmendmentProposal> {
+  if (proposal.action !== 'REMOVE') return proposal
+
+  const { tagId } = await getSecondFallOffTag(client, slotId)
+
+  const { data: tagRow, error: tagError } = await client
+    .from('tags')
+    .select('label')
+    .eq('id', tagId)
+    .maybeSingle()
+  if (tagError) throw tagError
+  if (!tagRow || normalizeLabel(tagRow.label) !== DISINTEREST_LABEL) return proposal
+
+  const { count, error: completionsError } = await client
+    .from('completions')
+    .select('id, slots!inner(commitment_id)', { count: 'exact', head: true })
+    .eq('slots.commitment_id', context.commitmentId)
+  if (completionsError) throw completionsError
+  if ((count ?? 0) >= MINIMUM_COMPLETIONS_BEFORE_REMOVE) return proposal
+
+  const bucket = pickMoveTarget(context.currentBucket, context.wakeTime, context.blockedDates ?? [], excludeBuckets)
+
+  return {
+    action: 'MOVE',
+    target: proposal.target,
+    params: { bucket },
+    reasoning: DISINTEREST_GATE_REASONING,
+    confidence: 1.0,
+    proposed_by: 'rule',
+  }
 }
 
 export interface ProposeAmendmentResult {
@@ -359,10 +455,16 @@ export async function proposeAmendmentForFallOff(
   fallOffId: string,
 ): Promise<ProposeAmendmentResult> {
   const { fallOff, context, userId } = await loadAmendmentContext(client, fallOffId)
-  const proposal = proposeAmendment(context)
+  let proposal = proposeAmendment(context)
 
   if (proposal.action === 'REMOVE') {
+    // Downgrade happens regardless of the disinterest gate's outcome below:
+    // "the 2nd-fall MOVE failed a 3rd time" is a fact established the
+    // moment this 3rd fall_offs row exists, independent of what escalation
+    // action ends up being proposed for it (ticket 013's reasoning, CONTEXT.md
+    // §9a) — CLARIFICATIONS.md [013] "Downgrade magnitude and timing".
     await downgradeTagActionLearning(client, userId, fallOff.slot_id)
+    proposal = await applyDisinterestExposureGate(client, proposal, context, fallOff.slot_id, [])
   }
 
   const { data: inserted, error } = await client
@@ -499,9 +601,20 @@ export async function rejectAmendmentWithRevision(
     throw new Error(`amendment ${amendmentId} already has a user_response (${amendment.user_response})`)
   }
 
-  const { context } = await loadAmendmentContext(client, amendment.fall_off_id)
+  const { fallOff, context } = await loadAmendmentContext(client, amendment.fall_off_id)
   const originalBucket = (amendment.params as { bucket?: Bucket }).bucket
-  const revision = proposeAmendment(context, originalBucket ? [originalBucket] : [])
+  const excludeBuckets = originalBucket ? [originalBucket] : []
+  let revision = proposeAmendment(context, excludeBuckets)
+
+  if (revision.action === 'REMOVE') {
+    // Re-applies the same gate a fresh proposal gets — reachable both when
+    // the rejected proposal was itself REMOVE (gate wasn't triggered, or
+    // exposure has since crossed the threshold) and when it was the gate's
+    // own MOVE downgrade (proposeAmendment's pure re-computation above has
+    // no memory of the prior gating and always returns REMOVE for
+    // occurrence 3, so the gate must run again here too).
+    revision = await applyDisinterestExposureGate(client, revision, context, fallOff.slot_id, excludeBuckets)
+  }
 
   await applyAction(client, revision.action, revision.target, revision.params)
 
