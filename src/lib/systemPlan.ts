@@ -22,6 +22,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Bucket } from './slots'
 import { materializeCycleSlots } from './slots'
 import { getReliabilityMap } from './reliabilityMap'
+import { getLoadFactorMinutes } from './loadFactor'
 
 export type CycleStatus = 'draft' | 'active' | 'closed'
 
@@ -146,6 +147,12 @@ async function buildGenerateRequestBody(
     .eq('cycle_id', cycle.id)
   if (blockedError) throw blockedError
 
+  // CONTEXT.md §6, ticket 018: cycle 2+'s ceiling is measured (load_factor),
+  // not stated-current. `null` (no closed cycle yet for this user) omits
+  // the field entirely, so `generate` falls back to its cycle-1 default —
+  // this is what makes cycle 1 unaffected without a special case here.
+  const ceilingBasisMinutes = await getLoadFactorMinutes(client, cycle.user_id)
+
   return {
     wake_time: cycle.wake_time,
     focus_areas: focusAreas.map((fa) => ({
@@ -163,6 +170,7 @@ async function buildGenerateRequestBody(
       scheduled: r.scheduled,
     })),
     blocked_windows: (blockedRows ?? []).map((b: { date: string }) => ({ date: b.date })),
+    ...(ceilingBasisMinutes !== null ? { ceiling_basis_minutes: ceilingBasisMinutes } : {}),
   }
 }
 

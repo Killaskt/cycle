@@ -174,6 +174,64 @@ describe('regenerateCommitments', () => {
   })
 })
 
+describe('generateInitialCommitments: cycle 2+ ceiling from load_factor (ticket 018, CONTEXT.md §6)', () => {
+  it('uses load_factor.last_cycle_completed_minutes as the ceiling basis instead of stated current, when a load_factor row exists', async () => {
+    const { userId, client } = await mintUser('sysplan-loadfactor-ceiling')
+
+    // Two goals whose stated-current ceiling (CONTEXT.md §5's cycle-1 rule)
+    // would force a back-off: (4*30 + 4*30) * 1.15 = 276 < pre-backoff load
+    // of 300 (same numbers as generationMath.test.ts's ceiling-basis case).
+    const { data: cycle, error: cycleError } = await client
+      .from('cycles')
+      .insert({ user_id: userId, status: 'draft', timeframe_days: 14, wake_time: '06:30' })
+      .select()
+      .single()
+    if (cycleError) throw cycleError
+
+    const { error: focusAreaError } = await client.from('focus_areas').insert([
+      {
+        cycle_id: cycle.id,
+        name: 'goal-a',
+        target_freq: 8,
+        target_dur: 30,
+        current_freq: 4,
+        current_dur: 30,
+        intake_order: 0,
+      },
+      {
+        cycle_id: cycle.id,
+        name: 'goal-b',
+        target_freq: 8,
+        target_dur: 30,
+        current_freq: 4,
+        current_dur: 30,
+        intake_order: 1,
+      },
+    ])
+    if (focusAreaError) throw focusAreaError
+
+    // A measured load_factor comfortably above stated-current: ceiling =
+    // 500 * 1.15 = 575, well above the pre-backoff load of 300 -> no
+    // back-off should occur, unlike the stated-current 276 ceiling.
+    const { error: loadFactorError } = await client
+      .from('load_factor')
+      .upsert({ user_id: userId, last_cycle_completed_minutes: 500 })
+    if (loadFactorError) throw loadFactorError
+
+    const commitments = await generateInitialCommitments(client, cycle.id)
+    expect(commitments).toHaveLength(2)
+    const totalLoad = commitments.reduce((sum, c) => sum + c.freq * c.dur, 0)
+
+    const statedCurrentCeiling = (4 * 30 + 4 * 30) * 1.15 // 276
+    expect(totalLoad).toBeGreaterThan(statedCurrentCeiling) // proves stated-current was NOT the basis used
+    expect(totalLoad).toBeLessThanOrEqual(500 * 1.15) // and the measured basis was honored
+    for (const c of commitments) {
+      expect(c.freq).toBe(5) // both goals kept their un-backed-off step
+      expect(c.dur).toBe(30)
+    }
+  })
+})
+
 describe('acceptCycle', () => {
   it('transitions draft -> active, sets started_at, and materializes slots exactly once', async () => {
     const { userId, client } = await mintUser('sysplan-accept')

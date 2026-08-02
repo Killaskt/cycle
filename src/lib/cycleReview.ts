@@ -26,10 +26,17 @@
 // other function here writes `cycles.status` at all. There is no write
 // path back to `draft`/`active` for a cycle from this module, satisfying
 // the ticket's "a closed cycle can no longer be edited" requirement.
+//
+// `submitCycleReview` also writes `load_factor.last_cycle_completed_minutes`
+// for this cycle (`./loadFactor`'s `updateLoadFactorFromCycle`) — ticket
+// 018, CONTEXT.md §6. Cycle-close is picked (over next-cycle-start) as the
+// one point every closed cycle passes through exactly once; see
+// `loadFactor.ts`'s doc comment for the full reasoning.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Bucket } from './slots'
 import type { TagClassification } from './tagRepository'
+import { updateLoadFactorFromCycle } from './loadFactor'
 
 export type GoalResult = 'hit' | 'partial' | 'missed'
 
@@ -298,7 +305,7 @@ export async function submitCycleReview(
 
   const { data: cycleRow, error: cycleError } = await client
     .from('cycles')
-    .select('id, status')
+    .select('id, status, user_id')
     .eq('id', cycleId)
     .single()
   if (cycleError) throw cycleError
@@ -339,6 +346,13 @@ export async function submitCycleReview(
       .eq('id', correction.tagId)
     if (tagError) throw tagError
   }
+
+  // CONTEXT.md §6, ticket 018: snapshot this cycle's actual completed
+  // minutes into load_factor before closing — a failure here aborts the
+  // whole submission (cycle stays 'active'), same pattern as tag
+  // corrections above, rather than closing a cycle whose load_factor write
+  // silently never happened.
+  await updateLoadFactorFromCycle(client, cycleRow.user_id, cycleId)
 
   const review: CycleReviewJson = {
     goals: input.goals.map((g) => ({

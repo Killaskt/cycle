@@ -356,6 +356,44 @@ describe('submitCycleReview', () => {
     expect(cycleRow?.status).toBe('closed')
   })
 
+  it('writes load_factor.last_cycle_completed_minutes for this cycle at cycle-close time (ticket 018, CONTEXT.md §6)', async () => {
+    const { userId, client, cycle, focusAreaA, focusAreaB, commitmentA } = await setUpCycleWithTwoGoals(
+      'review-load-factor',
+    )
+    // commitmentA: dur 25, two completed slots -> 50 minutes. commitmentB
+    // was already removed in the fixture and has no slots.
+    const { error: slot1Error } = await client
+      .from('slots')
+      .insert({ commitment_id: commitmentA.id, scheduled_date: '2026-08-04', bucket: 'weekday_morning', status: 'completed' })
+    if (slot1Error) throw slot1Error
+    const { error: slot2Error } = await client
+      .from('slots')
+      .insert({ commitment_id: commitmentA.id, scheduled_date: '2026-08-06', bucket: 'weekday_morning', status: 'completed' })
+    if (slot2Error) throw slot2Error
+    const { error: slot3Error } = await client
+      .from('slots')
+      .insert({ commitment_id: commitmentA.id, scheduled_date: '2026-08-08', bucket: 'weekday_morning', status: 'fell_off' })
+    if (slot3Error) throw slot3Error
+
+    await submitCycleReview(client, cycle.id, {
+      goals: [
+        { focusAreaId: focusAreaA.id, result: 'hit', keepNext: true },
+        { focusAreaId: focusAreaB.id, result: 'missed', keepNext: false },
+      ],
+      fallSummaryConfirmed: true,
+      tagCorrections: [],
+      freeform: 'Keep running, drop Spanish.',
+    })
+
+    const { data: loadFactor, error } = await client
+      .from('load_factor')
+      .select('last_cycle_completed_minutes')
+      .eq('user_id', userId)
+      .single()
+    expect(error).toBeNull()
+    expect(loadFactor?.last_cycle_completed_minutes).toBe(50)
+  })
+
   it('a draft cycle (never started) cannot be closed', async () => {
     const { userId, client } = await mintUser('review-draft-cycle')
     const { data: draftCycle, error } = await client

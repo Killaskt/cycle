@@ -197,6 +197,8 @@ One function, real model call, provider selected by env var (`MODEL_PROVIDER=fix
 ```
 `reliability_map` is `[]` on cycle 1 (no data yet — every bucket reads neutral, per CONTEXT.md §9).
 
+**`ceiling_basis_minutes`** (optional, ticket 018, CONTEXT.md §6): when present, the ceiling used by both `applyCeiling` and the runtime invariant check is `ceiling_basis_minutes * 1.15` instead of the cycle-1 default (`Σ current_freq × current_dur` across `focus_areas`). `src/lib/systemPlan.ts`'s `buildGenerateRequestBody` sets it from `load_factor.last_cycle_completed_minutes` whenever that row exists for the user — i.e. automatically from cycle 2 onward, once a prior cycle has closed. Additive field; omitted (cycle 1, no `load_factor` row yet) it changes nothing.
+
 **Model call, per focus area** — request to the provider:
 ```json
 { "focus_area": { "name": "running", "...": "..." }, "wake_time": "06:30" }

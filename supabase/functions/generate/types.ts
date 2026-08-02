@@ -66,6 +66,17 @@ export interface GenerateRequest {
   focus_areas: FocusAreaRequest[]
   reliability_map: ReliabilityBucketInput[]
   blocked_windows: BlockedWindowInput[]
+  /**
+   * Optional — ticket 018, CONTEXT.md §6. When present, the ceiling is
+   * `ceiling_basis_minutes * 1.15` instead of the cycle-1 default
+   * (Σ current_freq × current_dur across `focus_areas`) — `src/lib/
+   * systemPlan.ts`'s `buildGenerateRequestBody` sets this from
+   * `load_factor.last_cycle_completed_minutes` whenever that row exists for
+   * the user, i.e. automatically for cycle 2+. Additive/optional so cycle 1
+   * (no `load_factor` row yet) and every existing caller/fixture is
+   * unaffected when it's omitted.
+   */
+  ceiling_basis_minutes?: number
 }
 
 // The one thing the model is asked for, per focus area — CONTEXT.md §12.

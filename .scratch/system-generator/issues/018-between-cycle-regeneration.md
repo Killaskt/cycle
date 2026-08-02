@@ -1,7 +1,7 @@
 ---
 id: 018
 title: Between-cycle regeneration — completion bands + measured load factor
-status: open
+status: done
 blocked_by: [003, 017]
 ---
 

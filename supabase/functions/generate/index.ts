@@ -72,6 +72,9 @@ export async function buildCommitments(request: GenerateRequest): Promise<Commit
   const provider = getProvider()
 
   // Deterministic math — CONTEXT.md §5, ticket 003. No model involved.
+  // `ceiling_basis_minutes` (CONTEXT.md §6, ticket 018): present for cycle
+  // 2+ (systemPlan.ts sets it from load_factor), absent for cycle 1 — in
+  // which case `applyCeiling` falls back to its own stated-current default.
   const plans = applyCeiling(
     request.focus_areas.map(
       (fa): FocusAreaInput => ({
@@ -82,6 +85,7 @@ export async function buildCommitments(request: GenerateRequest): Promise<Commit
         targetDur: fa.target_dur,
       }),
     ),
+    request.ceiling_basis_minutes,
   )
 
   const commitments: CommitmentResult[] = []
@@ -102,7 +106,12 @@ export async function buildCommitments(request: GenerateRequest): Promise<Commit
   // but is the actual guarantee, not a test convenience. Any failure:
   // retry the model call once more for the offending focus area(s) only,
   // second failure → deterministic fallback for those only.
-  const firstCheck = checkInvariants(commitments, request.focus_areas, request.blocked_windows)
+  const firstCheck = checkInvariants(
+    commitments,
+    request.focus_areas,
+    request.blocked_windows,
+    request.ceiling_basis_minutes,
+  )
   if (!firstCheck.valid) {
     for (const focusAreaId of firstCheck.offendingFocusAreaIds) {
       const idx = commitments.findIndex((c) => c.focus_area_id === focusAreaId)

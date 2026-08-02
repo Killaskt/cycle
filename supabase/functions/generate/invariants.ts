@@ -25,6 +25,7 @@ export function checkInvariants(
   commitments: CommitmentResult[],
   focusAreas: FocusAreaRequest[],
   blockedWindows: BlockedWindowInput[],
+  ceilingBasisMinutes?: number,
 ): InvariantResult {
   const offending = new Set<string>()
   const reasons: string[] = []
@@ -70,8 +71,14 @@ export function checkInvariants(
     }
   }
 
-  // 4. total load <= ceiling (CONTEXT.md §5: Σ(currentFreq × currentDur) × 1.15)
-  const ceiling = focusAreas.reduce((sum, fa) => sum + fa.current_freq * fa.current_dur, 0) * 1.15
+  // 4. total load <= ceiling. Cycle 1 (CONTEXT.md §5): Σ(currentFreq × currentDur) × 1.15.
+  // Cycle 2+ (CONTEXT.md §6, ticket 018): ceilingBasisMinutes × 1.15 when the
+  // caller supplies it (load_factor-derived) — same basis `applyCeiling` used
+  // to build these commitments in the first place, so this check stays
+  // consistent with whichever rule actually produced them.
+  const basis =
+    ceilingBasisMinutes ?? focusAreas.reduce((sum, fa) => sum + fa.current_freq * fa.current_dur, 0)
+  const ceiling = basis * 1.15
   const load = commitments.reduce((sum, c) => sum + c.freq * c.dur, 0)
   if (load > ceiling) {
     reasons.push(`total load ${load} exceeds ceiling ${ceiling}`)

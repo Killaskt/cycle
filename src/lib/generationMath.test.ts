@@ -3,8 +3,11 @@ import {
   applyCeiling,
   completionBand,
   computeDurationStep,
+  computeGoalCompletionRate,
+  computeNextCycleGoalPlan,
   computeStep,
   type FocusAreaInput,
+  type PriorGoalOutcome,
 } from './generationMath'
 
 describe('computeStep', () => {
@@ -111,6 +114,33 @@ describe('applyCeiling', () => {
       expect(plan.durStep).toBeGreaterThanOrEqual(0)
     }
   })
+
+  it('ticket 018: an explicit ceilingBasisMinutes overrides the stated-current default and changes back-off behavior', () => {
+    const areas: FocusAreaInput[] = [
+      { intakeOrder: 0, currentFreq: 4, targetFreq: 8, currentDur: 30, targetDur: 30 },
+      { intakeOrder: 1, currentFreq: 4, targetFreq: 8, currentDur: 30, targetDur: 30 },
+    ]
+    // Stated-current ceiling (no override, cycle 1 rule): (4*30+4*30)*1.15 = 276.
+    // Pre-backoff load = 5*30 + 5*30 = 300 > 276 -> one back-off required
+    // (same case as the tie-break test above).
+    const statedCurrentPlans = applyCeiling(areas)
+    const [statedA, statedB] = statedCurrentPlans
+    expect(statedA.planFreq).toBe(5)
+    expect(statedB.planFreq).toBe(4) // backed off
+    const statedLoad = statedA.planFreq * statedA.planDur + statedB.planFreq * statedB.planDur
+    expect(statedLoad).toBeLessThanOrEqual(276)
+
+    // Measured basis (load_factor.last_cycle_completed_minutes, ticket 018):
+    // a user who actually completed far more than "stated current" last
+    // cycle gets a higher ceiling — no back-off needed at all, same load.
+    const measuredPlans = applyCeiling(areas, 500) // ceiling = 500 * 1.15 = 575
+    const [measuredA, measuredB] = measuredPlans
+    expect(measuredA.planFreq).toBe(5)
+    expect(measuredB.planFreq).toBe(5) // NOT backed off — the measured ceiling wins
+    const measuredLoad = measuredA.planFreq * measuredA.planDur + measuredB.planFreq * measuredB.planDur
+    expect(measuredLoad).toBe(300)
+    expect(measuredLoad).toBeGreaterThan(statedLoad) // the two bases genuinely produced different outcomes
+  })
 })
 
 describe('completionBand', () => {
@@ -133,5 +163,90 @@ describe('completionBand', () => {
     const rates = [0.95, 0.7, 0.3]
     const bands = rates.map(completionBand)
     expect(bands).toEqual(['advance', 'hold', 'retreat_halfway'])
+  })
+})
+
+describe('computeGoalCompletionRate', () => {
+  it('completions / scheduledSlots', () => {
+    expect(computeGoalCompletionRate(9, 10)).toBeCloseTo(0.9)
+    expect(computeGoalCompletionRate(1, 10)).toBeCloseTo(0.1)
+  })
+
+  it('reads as 0 (not NaN/Infinity) when scheduledSlots <= 0', () => {
+    expect(computeGoalCompletionRate(0, 0)).toBe(0)
+    expect(computeGoalCompletionRate(5, 0)).toBe(0)
+  })
+})
+
+describe('computeNextCycleGoalPlan — ticket 018, CONTEXT.md §6', () => {
+  it('advance (>=90%): current = prior plan, target = original intake target unchanged', () => {
+    const outcome: PriorGoalOutcome = {
+      intakeOrder: 0,
+      priorPlanFreq: 5,
+      priorPlanDur: 25,
+      completions: 9,
+      scheduledSlots: 10, // rate = 0.9
+      originalTargetFreq: 8,
+      originalTargetDur: 40,
+    }
+    const plan = computeNextCycleGoalPlan(outcome)
+
+    expect(plan.band).toBe('advance')
+    expect(plan.completionRate).toBeCloseTo(0.9)
+    expect(plan.currentFreq).toBe(5)
+    expect(plan.currentDur).toBe(25)
+    expect(plan.targetFreq).toBe(8)
+    expect(plan.targetDur).toBe(40)
+
+    // The advance actually happens on the *next* generate call, via the
+    // same ticket-003 math, not a second formula invented here.
+    expect(computeStep(plan.currentFreq, plan.targetFreq)).toBe(1) // gap=3 -> round(0.75)=1
+    expect(computeDurationStep(plan.currentDur, plan.targetDur)).toBe(5) // gap=15 -> round(3.75)=4 -> clamp to 5
+  })
+
+  it('hold (60-89%): target_freq/target_dur pinned to the prior plan, not the original target', () => {
+    const outcome: PriorGoalOutcome = {
+      intakeOrder: 1,
+      priorPlanFreq: 3,
+      priorPlanDur: 20,
+      completions: 7,
+      scheduledSlots: 10, // rate = 0.7
+      originalTargetFreq: 6,
+      originalTargetDur: 40,
+    }
+    const plan = computeNextCycleGoalPlan(outcome)
+
+    expect(plan.band).toBe('hold')
+    expect(plan.completionRate).toBeCloseTo(0.7)
+    expect(plan.currentFreq).toBe(3)
+    expect(plan.currentDur).toBe(20)
+    expect(plan.targetFreq).toBe(3) // prior plan, NOT originalTargetFreq (6)
+    expect(plan.targetDur).toBe(20) // prior plan, NOT originalTargetDur (40)
+
+    // Pinning current === target guarantees zero movement downstream.
+    expect(computeStep(plan.currentFreq, plan.targetFreq)).toBe(0)
+    expect(computeDurationStep(plan.currentDur, plan.targetDur)).toBe(0)
+  })
+
+  it('retreat_halfway (<60%): halfway between the prior plan and what was actually completed', () => {
+    const outcome: PriorGoalOutcome = {
+      intakeOrder: 2,
+      priorPlanFreq: 4,
+      priorPlanDur: 30,
+      completions: 1,
+      scheduledSlots: 10, // rate = 0.1
+      originalTargetFreq: 8,
+      originalTargetDur: 60,
+    }
+    const plan = computeNextCycleGoalPlan(outcome)
+
+    expect(plan.band).toBe('retreat_halfway')
+    expect(plan.completionRate).toBeCloseTo(0.1)
+    // actualFreq = 0.1 * 4 = 0.4 -> (4 + 0.4) / 2 = 2.2 -> round = 2
+    expect(plan.currentFreq).toBe(2)
+    expect(plan.targetFreq).toBe(2)
+    // actualDur = 0.1 * 30 = 3 -> (30 + 3) / 2 = 16.5 -> round = 17
+    expect(plan.currentDur).toBe(17)
+    expect(plan.targetDur).toBe(17)
   })
 })
