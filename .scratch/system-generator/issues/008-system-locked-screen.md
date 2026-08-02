@@ -1,7 +1,7 @@
 ---
 id: 008
 title: System (locked) screen — generate, accept, regenerate-once
-status: open
+status: done
 blocked_by: [005, 006, 007]
 ---
 
