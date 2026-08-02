@@ -1,7 +1,7 @@
 ---
 id: 003
 title: Deterministic generation math library (delta, ceiling, completion bands)
-status: open
+status: done
 blocked_by: []
 ---
 
@@ -25,3 +25,20 @@ One test per formula branch, at minimum:
 - Each completion band, per goal independently (not aggregated).
 
 ## Notes
+
+Implemented in `src/lib/generationMath.ts` with tests in `src/lib/generationMath.test.ts`
+(13 tests, all green; full suite 18/18 passing). `npm run typecheck` and `npm test` both
+exit 0.
+
+- `computeStep` / `computeDurationStep`: implement the `gap > 0` clamp and the `gap <= 0` -> 0
+  guard exactly as specified (no re-introduction of the min-1 clamp bug).
+- `applyCeiling`: the back-off loop's "back off by one step" was underspecified for goals with
+  both a frequency and a duration delta — logged as a genuine spec gap in
+  `docs/agents/CLARIFICATIONS.md` ([003] entry) with a conservative, deterministic assumption
+  (retreat frequency step to 0 first, then duration step one minute at a time). This guarantees
+  termination since reverting every goal to zero step always satisfies `load <= ceiling`.
+- `completionBand`: per-goal classifier only (advance/hold/retreat_halfway), as scoped by this
+  ticket. The actual "retreat halfway toward completed" magnitude math is between-cycle
+  regeneration (ticket 018), not built here.
+- No unrelated test failures observed from tickets 001/002's in-progress work at time of running
+  (full suite was 2 files / 18 tests, all passing).
