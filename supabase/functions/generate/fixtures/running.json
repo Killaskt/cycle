@@ -1,0 +1,6 @@
+{
+  "commitment_name": "Morning Run",
+  "session_shape": "single continuous run",
+  "preferred_bucket": "weekday_morning",
+  "rationale": "A short run right after waking builds consistency before the day's obligations start competing for time."
+}

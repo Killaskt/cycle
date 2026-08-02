@@ -68,6 +68,36 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 **Confidence:** medium
 **Status:** open
 
+## [005] `blocked_windows` collision check has no time-of-day to compare against — 2026-08-02 12:45
+**Question:** `docs/SPEC.md` §3's `generate` request shape gives each `blocked_windows` entry only a bare `date` (e.g. `{ "date": "2026-08-05" }`), and the request itself carries no cycle start date or timeframe — so a date can't be mapped to a specific weekday occurrence, and there's no time-of-day at all to compare against a candidate `bucket`. Step 3's "if it collides with a blocked_window... reassign" can't be evaluated as a literal point-in-time overlap with the data given.
+**Assumption made:** Derive `day_type` (weekday/weekend) from each blocked date and treat every bucket of that day_type as blocked for bucket-resolution purposes (`supabase/functions/generate/bucketOrder.ts` — `blockedBucketSet`). This over-blocks an entire day_type from a single blocked date, but errs toward "never place into a period with a known disruption" rather than risking a real collision, and is a one-line loosening later once `blocked_windows` carry real time-of-day info (or once slot materialization, ticket 007, gives per-date placement a place to do the precise check instead).
+**Confidence:** low
+**Status:** open
+
+## [005] `time_of_day` clock boundaries — 2026-08-02 12:45
+**Question:** `docs/SPEC.md` §1 defines the six `time_of_day` enum values (`early_morning, morning, midday, afternoon, evening, night`) but never states the clock-hour boundaries between them, needed to map a `wake_time` string to a bucket for "wake-time order" scanning (CONTEXT.md §12 fallback rule).
+**Assumption made:** Six roughly-even bands: early_morning 05:00, morning 08:00, midday 11:00, afternoon 14:00, evening 17:00, night 20:00 (each running until the next bound). Implemented in `supabase/functions/generate/bucketOrder.ts` (`timeOfDayForMinutes`).
+**Confidence:** medium
+**Status:** open
+
+## [005] Day-type scan priority in the fixed bucket order — 2026-08-02 12:45
+**Question:** CONTEXT.md §12's fallback rule says "scan buckets in a fixed order starting after wake time" but doesn't say whether weekday or weekend buckets are scanned first for a given time-of-day.
+**Assumption made:** Weekday buckets before weekend, for the same time-of-day-from-wake-time position (`supabase/functions/generate/bucketOrder.ts` — `wakeOrderedBuckets`). Arbitrary but deterministic; MVP intake doesn't collect a weekday/weekend preference, so there's no stronger signal to sequence by.
+**Confidence:** low
+**Status:** open
+
+## [005] Reliability-based bucket reassignment threshold — 2026-08-02 12:45
+**Question:** `docs/SPEC.md` §3 step 3 says a bucket may be reassigned if the reliability map marks it "unreliable relative to alternatives," without a numeric threshold for "unreliable."
+**Assumption made:** Only reassign when a trusted (`scheduled >= 3`) alternative bucket's completion rate is at least 20 percentage points higher than the model's preferred bucket's trusted rate (`UNRELIABLE_GAP` in `supabase/functions/generate/bucketOrder.ts`). Untrusted buckets (< 3 observations, including the always-empty cycle-1 `reliability_map`) never trigger reassignment — they read neutral per CONTEXT.md §9.
+**Confidence:** low
+**Status:** open
+
+## [005] Live model provider/API for `MODEL_PROVIDER=live` — 2026-08-02 12:45
+**Question:** Neither CONTEXT.md nor `docs/SPEC.md` names which model API the live provider should call.
+**Assumption made:** Anthropic's Messages API (`https://api.anthropic.com/v1/messages`), key from `ANTHROPIC_API_KEY`, model name overridable via `MODEL_NAME` (default `claude-3-5-haiku-latest`), temperature 0 — `supabase/functions/generate/provider.ts` (`liveProvider`). Untested in this ticket (no live key in this environment; DoD is fixture-only per `.claude/skills/local-supabase-stack/SKILL.md`). The seam shape (`Provider = (input) => Promise<unknown>`, validated uniformly by `validate.ts`) means swapping providers later needs no change outside this one function.
+**Confidence:** low
+**Status:** open
+
 ## [003] Ceiling back-off granularity ("back off ... by one step") — 2026-08-02 08:20
 **Question:** CONTEXT.md §5's back-off loop says "back off the goal contributing the most added minutes, by one step" but a goal has two independent deltas — a frequency step (`step`, 1-2) and a duration step (`dur_step`, 5-15 minutes) — and the spec doesn't say which one "one step" refers to when a goal has both, or what unit governs retreating the duration side.
 **Assumption made:** Per selected goal, retreat the frequency step to 0 one unit at a time first; only once a goal's frequency step is fully retreated does its duration step begin retreating, one minute at a time. This is deterministic, reversible, and guarantees the loop terminates with `load <= ceiling`: once every goal's `freqStep` and `durStep` are both 0, `load == Σ(currentFreq × currentDur)`, which is always `<= ceiling` since `ceiling` is that same sum × 1.15. Implemented in `src/lib/generationMath.ts` (`applyCeiling`).
