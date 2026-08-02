@@ -1,7 +1,7 @@
 ---
 id: 006
 title: Intake screen
-status: open
+status: done
 blocked_by: [001, 002]
 ---
 
