@@ -62,6 +62,12 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 **Confidence:** medium
 **Status:** open
 
+## [015] Excusing a non-pending slot — 2026-08-02 10:00
+**Question:** The ticket says tapping "something came up" sets a slot's status to `excused`, but doesn't say what should happen if the slot is already `completed` or `fell_off` (e.g. the user taps it after already checking it off, or after it's already been logged as a fall).
+**Assumption made:** `excuseSlot` throws if the target slot's status isn't `pending`, rather than silently overwriting an already-completed or already-fallen-off slot's status. Reasoning: `completed`/`fell_off` are terminal, already-logged outcomes (a completion row or a fall_off row may already exist referencing that slot); silently flipping the slot's status to `excused` after the fact would desync the slot's status from that history without deleting it, and would also retroactively "un-fall" a slot in a way that's indistinguishable from data corruption. Most conservative/reversible: the caller can decide what to do (e.g. disable the button in the UI) rather than the write path guessing.
+**Confidence:** medium
+**Status:** open
+
 ## [003] Ceiling back-off granularity ("back off ... by one step") — 2026-08-02 08:20
 **Question:** CONTEXT.md §5's back-off loop says "back off the goal contributing the most added minutes, by one step" but a goal has two independent deltas — a frequency step (`step`, 1-2) and a duration step (`dur_step`, 5-15 minutes) — and the spec doesn't say which one "one step" refers to when a goal has both, or what unit governs retreating the duration side.
 **Assumption made:** Per selected goal, retreat the frequency step to 0 one unit at a time first; only once a goal's frequency step is fully retreated does its duration step begin retreating, one minute at a time. This is deterministic, reversible, and guarantees the loop terminates with `load <= ceiling`: once every goal's `freqStep` and `durStep` are both 0, `load == Σ(currentFreq × currentDur)`, which is always `<= ceiling` since `ceiling` is that same sum × 1.15. Implemented in `src/lib/generationMath.ts` (`applyCeiling`).

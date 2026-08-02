@@ -1,7 +1,7 @@
 ---
 id: 015
 title: "Something came up" — the non-fall external-event tap
-status: open
+status: done
 blocked_by: [007]
 ---
 
