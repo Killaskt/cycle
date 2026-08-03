@@ -32,6 +32,12 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 
 ## Log
 
+## [014] Does the cycle-wide overload response go through a user accept/reject step? — 2026-08-02 21:15
+**Question:** CONTEXT.md §9b is explicit that the per-slot 2nd/3rd-fall amendment is "rendered to the user, accepted or rejected-with-reason." §9c (cycle-wide overload) never uses that language — it only says the system "fires" a response — but doesn't explicitly rule a review step in or out either.
+**Assumption made:** No user accept/reject step — `checkAndApplyCycleWideOverload` (`src/lib/overload.ts`) applies `MOVE_CLUSTER`/`REDUCE_FREQUENCY_ALL` immediately and logs the `amendments` row with `user_response: 'accepted'` already set, not left pending. Reasoning: §9c's own wording ("fires," "applies") reads as automatic where §9b's wording is explicitly interactive; a cycle-wide response also affects every active commitment at once, so a per-commitment review step would need entirely new UI this ticket's DoD never asked for.
+**Confidence:** medium
+**Status:** open
+
 ## [018] Between-cycle regeneration: exact per-band target numbers, "actually completed" for duration, ceiling wiring, and load_factor write timing — 2026-08-02 19:40
 **Question:** CONTEXT.md §6 gives the band responses in prose ("advance one more step toward target," "hold — same plan," "retreat halfway toward what was actually completed") and the ticket says these "need concrete target numbers... derive these deterministically from the prior cycle's `commitments.freq`/`dur` and the band" — but neither source specifies (a) whether `target_freq`/`target_dur` for the `advance` band should stay the original intake target or become some newly-computed number, (b) what "what was actually completed" means numerically for `dur`, since the schema has no per-slot actual-duration signal — only a binary `completed`/not per slot (docs/SPEC.md §2 `slots.status`) — so there's no direct "completed minutes for this one goal" figure to retreat toward, (c) whether the cycle-2+ ceiling override should be wired through the real `generate` Edge Function contract or only exist as an isolated client-side/pure-math concern, and (d) whether `load_factor.last_cycle_completed_minutes` should be written at cycle-close or next-cycle-start (the ticket explicitly leaves this open).
 **Assumption made:**
@@ -82,13 +88,13 @@ Flip `Status` to `resolved` (one-line resolution note) once it's been reviewed �
 **Question:** The source conversation floated two alternative responses to a volume-type cycle-wide overload trigger — "apply REDUCE_FREQUENCY across the board" or "drop the lowest-completion goal entirely" — without picking between them.
 **Assumption made:** `REDUCE_FREQUENCY` across the board. Reasoning: less destructive than removing an entire goal, consistent with the net-load-down-or-flat guardrail (ADR-0004), and it reserves full goal removal for the more targeted per-slot 3rd-fall path (CONTEXT.md §9a) rather than duplicating that behavior at the cycle-wide level.
 **Confidence:** medium
-**Status:** open
+**Status:** resolved — ticket 014 (`src/lib/overload.ts`'s `checkAndApplyCycleWideOverload`) built exactly this: `REDUCE_FREQUENCY_ALL` applies `REDUCE_FREQUENCY` to every active commitment, falling to `REMOVE` per-commitment only when that specific commitment's own floor would be breached (reusing `amendment.ts`'s existing floor guardrail, not a new cycle-wide-specific rule). Verified in `src/test/integration/overload.test.ts`.
 
 ## [context-doc] UX for a second cycle-wide overload trigger in one cycle — 2026-08-02 09:00
 **Question:** The source conversation states a cycle-wide overload response "fires at most once per cycle... if it would fire twice, that's not overload anymore, that's a cycle that should end early and be regenerated" — but doesn't specify the actual flow: is early termination automatic, does the user get notified first, does it count as anything in the fall-off logs, and does "regenerated" mean a full re-run of intake or just re-generation from existing intake data.
 **Assumption made:** None made — this path is rare enough (would require overload to fire, get a response, and then trigger again in the same cycle) that it's being left unimplemented for MVP. If the trigger condition is met a second time in one cycle, apply the same volume/placement response as the first time rather than any early-termination flow, and log that this happened for a human to review.
 **Confidence:** low
-**Status:** open
+**Status:** resolved — ticket 014 built exactly this, no more and no less: a repeat trigger is detected (an existing `amendments` row with `target->>'scope' = 'cycle_wide'` for the cycle), the identical response is re-applied to whatever's still active, and the logged row is marked `params.repeat_trigger: true` with distinct reasoning text calling out that it's a repeat, "flagged here for a human to review" — no early-termination or regeneration flow was built, matching the assumption above. Verified in `src/test/integration/overload.test.ts` (the nested second-trigger assertions inside the REDUCE_FREQUENCY_ALL test).
 
 ## [007] Blocked-date handling: skip vs. reschedule, and per-commitment vs. cycle-wide — 2026-08-02 09:30
 **Question:** The ticket says to "skip/reschedule an affected date rather than double-booking it" without picking one, and `blocked_windows.affected_slot_id` is nullable ("something came up" may or may not target a specific slot) but at materialization time no slots exist yet for the cycle to reference, so it's unclear whether a blocked date should exclude only the commitment tied to a specific slot or all commitments scheduling that day.

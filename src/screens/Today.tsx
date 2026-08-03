@@ -13,6 +13,7 @@ import type { TodaySlot } from '../lib/today'
 
 export interface TodayProps {
   cycleId: string
+  onReview?: (cycleId: string) => void
 }
 
 type LoadState =
@@ -20,7 +21,7 @@ type LoadState =
   | { status: 'error'; message: string }
   | { status: 'ready'; slots: TodaySlot[] }
 
-export function Today({ cycleId }: TodayProps) {
+export function Today({ cycleId, onReview }: TodayProps) {
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [completingId, setCompletingId] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -105,6 +106,12 @@ export function Today({ cycleId }: TodayProps) {
             )
           })}
         </ul>
+      )}
+
+      {onReview && (
+        <button type="button" onClick={() => onReview(cycleId)}>
+          Review cycle
+        </button>
       )}
     </section>
   )

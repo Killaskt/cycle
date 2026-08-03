@@ -1,0 +1,50 @@
+workflows:
+  ios-ad-hoc:
+    name: Tortoise Method iOS (Ad Hoc)
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      groups:
+        - tortoise_method_production
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: com.tortoisemethod.app
+      node: 22
+      xcode: latest
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: master
+          include: true
+          source: true
+      cancel_previous_builds: true
+    scripts:
+      - name: Install JavaScript dependencies
+        script: npm ci
+      - name: Verify production configuration
+        script: |
+          test -n "$VITE_SUPABASE_URL"
+          test -n "$VITE_SUPABASE_ANON_KEY"
+      - name: Build web app
+        script: npm run build
+      - name: Sync web build to iOS
+        script: npx cap sync ios
+      - name: Set iOS build number
+        script: |
+          cd ios/App
+          agvtool new-version -all "$BUILD_NUMBER"
+      - name: Apply Ad Hoc signing profile
+        script: |
+          cd ios/App
+          xcode-project use-profiles
+      - name: Build signed IPA
+        script: |
+          xcode-project build-ipa \
+            --project "$CM_BUILD_DIR/ios/App/App.xcodeproj" \
+            --scheme App
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.app
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Build/**/*.dSYM

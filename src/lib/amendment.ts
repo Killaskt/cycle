@@ -15,7 +15,10 @@
 // `occurrence_in_slot === 3` -> `REMOVE` (CONTEXT.md §9a's ladder: "the
 // amendment was wrong, escalate to REMOVE") plus the tag→action `learnings`
 // confidence downgrade CONTEXT.md §9a calls for at that same occurrence.
-// Cycle-wide overload (§9c) is ticket 014's, still not built here.
+// Cycle-wide overload (§9c) is ticket 014's — see `src/lib/overload.ts`,
+// which reuses this module's `applyAction` (now exported, plus a new
+// `REDUCE_FREQUENCY` case) and `pickMoveTarget` rather than duplicating
+// either.
 //
 // Ticket 016 (this extension) adds the disinterest-tag exposure gate
 // (CONTEXT.md §9a: "cannot trigger REMOVE before 3 completed sessions") in
@@ -106,7 +109,7 @@ const REMOVE_REASONING =
  * absolute last resort repeats `current` — a `MOVE` proposal must always be
  * producible, never throw.
  */
-function pickMoveTarget(current: Bucket, wakeTime: string, blockedDates: string[], exclude: Bucket[]): Bucket {
+export function pickMoveTarget(current: Bucket, wakeTime: string, blockedDates: string[], exclude: Bucket[]): Bucket {
   const blocked = blockedBucketSet(blockedDates.map((date) => ({ date })))
   const order = wakeOrderedBuckets(wakeTime) as Bucket[]
   const excludeSet = new Set<Bucket>([current, ...exclude])
@@ -487,9 +490,13 @@ export async function proposeAmendmentForFallOff(
 
 /**
  * "Code disposes" (ADR-0004): the only place a proposal actually mutates a
- * commitment. `MOVE` (ticket 012) and `REMOVE` (ticket 013) are in scope;
- * the rest of the enum is ticket 014 (cycle-wide)'s concern, meant to
- * extend this same switch rather than duplicate it.
+ * commitment. `MOVE` (ticket 012), `REMOVE` (ticket 013), and now
+ * `REDUCE_FREQUENCY` (ticket 014, cycle-wide overload's volume response —
+ * `src/lib/overload.ts`'s `checkAndApplyCycleWideOverload`) are in scope.
+ * Exported so both the per-slot amendment path (`acceptAmendment`/
+ * `rejectAmendmentWithRevision` below) and the cycle-wide path can share the
+ * exact same "code disposes" primitive per commitment, rather than either
+ * reimplementing it.
  *
  * `REMOVE` is a soft-delete (`commitments.removed_at`, migration
  * `20260802020000_commitments_removed_at.sql`) — never a hard `delete from
@@ -502,8 +509,16 @@ export async function proposeAmendmentForFallOff(
  * "future and un-completed" without needing an explicit date comparison.
  * Slots already `completed`/`fell_off`/`excused` are left untouched — they
  * are exactly the history this whole soft-delete design exists to keep.
+ *
+ * `REDUCE_FREQUENCY` (CONTEXT.md §9d: "freq − 1, floored at 1"; "if
+ * REDUCE_FREQUENCY would hit 0... the only remaining option is REMOVE"):
+ * reads the commitment's current `freq`, and if it's already at the floor
+ * (`<= 1`, so `freq - 1` would hit 0), falls through to this same
+ * function's `REMOVE` case instead of writing an invalid `freq`. Otherwise
+ * decrements `freq` by 1. No `params` needed — the magnitude is fixed, read
+ * from the DB, not caller-supplied.
  */
-async function applyAction(
+export async function applyAction(
   client: SupabaseClient,
   action: ActionType,
   target: AmendmentTarget,
@@ -532,9 +547,30 @@ async function applyAction(
       if (slotsError) throw slotsError
       return
     }
+    case 'REDUCE_FREQUENCY': {
+      const { data: commitmentRow, error: readError } = await client
+        .from('commitments')
+        .select('freq')
+        .eq('id', target.commitment_id)
+        .single()
+      if (readError) throw readError
+      if (!commitmentRow) throw new Error(`commitment ${target.commitment_id} not found`)
+
+      const currentFreq = (commitmentRow as { freq: number }).freq
+      if (currentFreq <= 1) {
+        return applyAction(client, 'REMOVE', target, {})
+      }
+
+      const { error } = await client
+        .from('commitments')
+        .update({ freq: currentFreq - 1 })
+        .eq('id', target.commitment_id)
+      if (error) throw error
+      return
+    }
     default:
       throw new Error(
-        `applyAction: action '${action}' is not handled by this amendment path yet (only MOVE/REMOVE are in scope)`,
+        `applyAction: action '${action}' is not handled by this amendment path yet (only MOVE/REMOVE/REDUCE_FREQUENCY are in scope)`,
       )
   }
 }

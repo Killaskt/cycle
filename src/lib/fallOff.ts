@@ -40,12 +40,19 @@
 // escalate to REMOVE"), the same trigger fires again — `proposeAmendment`
 // now handles occurrence 3 too, proposing `REMOVE` instead of `MOVE`, and
 // `proposeAmendmentForFallOff` also downgrades the relevant `learnings`
-// tag→action row as a side effect (see ./amendment.ts). No `amendments` row
-// is created at any occurrence other than 2 or 3.
+// tag→action row as a side effect (see ./amendment.ts). No per-slot
+// `amendments` row is created at any occurrence other than 2 or 3.
+//
+// Independently of the per-slot ladder above, ticket 014 (CONTEXT.md §9c,
+// ./overload.ts) runs `checkAndApplyCycleWideOverload` after *every*
+// `fall_offs` insert, at any occurrence — cycle-wide overload is a totally
+// separate diagnosis (ADR-0008) from the per-slot escalation ladder, so it
+// isn't gated on occurrence_in_slot the way the per-slot amendment is.
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { resolveTag, type ResolveTagInput } from './tagRepository'
 import { proposeAmendmentForFallOff, type AmendmentProposal } from './amendment'
+import { checkAndApplyCycleWideOverload, type CycleWideOverloadResult } from './overload'
 
 export interface RecordFallOffInput {
   slotId: string
@@ -73,6 +80,14 @@ export interface RecordFallOffResult {
    * 012) or 3 (`REMOVE`, ticket 013) — The Amendment.
    */
   amendment?: { amendmentId: string; proposal: AmendmentProposal }
+  /**
+   * Present only when this fall-off pushed the cycle's trailing-7-day rate
+   * over the cycle-wide overload threshold (CONTEXT.md §9c, ticket 014,
+   * ./overload.ts). Independent of `amendment` above — both can be present
+   * on the same call (e.g. a 2nd fall on one slot that also happens to be
+   * the 4th fall cycle-wide).
+   */
+  cycleWideOverload?: CycleWideOverloadResult
 }
 
 /**
@@ -177,6 +192,8 @@ export async function recordFallOff(
     amendment = { amendmentId, proposal }
   }
 
+  const cycleWideOverload = (await checkAndApplyCycleWideOverload(client, fallOff.id)) ?? undefined
+
   return {
     fallOffId: fallOff.id,
     slotId: input.slotId,
@@ -184,5 +201,6 @@ export async function recordFallOff(
     occurrenceInSlot,
     tagId: tag.id,
     amendment,
+    cycleWideOverload,
   }
 }
