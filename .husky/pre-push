@@ -1,0 +1,19 @@
+echo "Running pre-push checks (typecheck, lint, test)..."
+
+npm run typecheck || { echo "Typecheck failed — push aborted."; exit 1; }
+npm run lint || { echo "Lint failed — push aborted."; exit 1; }
+
+if ! docker ps > /dev/null 2>&1; then
+  echo "Docker isn't running (or unavailable in this environment) — skipping local tests."
+  echo "CI will still run the full test suite on GitHub after this push."
+  exit 0
+fi
+
+if ! npx -y supabase@latest status > /dev/null 2>&1; then
+  echo "Starting local Supabase stack for tests..."
+  npx -y supabase@latest start || { echo "Failed to start local Supabase — push aborted."; exit 1; }
+fi
+
+npm test || { echo "Tests failed — push aborted."; exit 1; }
+
+echo "Pre-push checks passed."
