@@ -18,6 +18,18 @@ This is for real bugs with a real fix applied — not open design questions (`do
 
 ## Log
 
+## Production startup failures lacked actionable diagnostics — infra — 2026-08-18
+**Symptom:** The TestFlight build rendered `Load failed` at startup, but the user could not identify whether `initAuthSession()` or the initial `cycles` query failed from the deployed iPhone app.
+**Root cause:** The startup catch rendered only `err.message` and had no production client error reporting; native crash reports and Supabase logs cannot reliably capture WebView-side JavaScript exceptions.
+**Fix:** Added `@sentry/react` initialization before React loads, React 19 root error handlers, and `Sentry.captureException` for the `load_current_cycle` failure path. Codemagic now injects its build number as the Sentry release, and `VITE_SENTRY_DSN` is stored in the production environment group.
+**Watch for:** Do not put a Sentry auth token in a Vite variable. `VITE_SENTRY_DSN` is intentionally client-visible; source-map upload and read-only issue-query credentials need separate, non-Vite secrets if added later.
+
+## Unquoted Codemagic shell assignment invalidates workflow YAML — infra — 2026-08-18
+**Symptom:** Codemagic rejected `codemagic.yaml` before a build could start with `Mapping values are not allowed here` on the web-build script.
+**Root cause:** The `VITE_APP_VERSION="$BUILD_NUMBER" npm run build` command was placed in an unquoted YAML scalar, so YAML interpreted the colon in the assignment as mapping syntax. A follow-up correction also briefly over-indented the `script` key.
+**Fix:** Quoted the complete command and aligned `script` with the other step properties: `script: 'VITE_APP_VERSION="$BUILD_NUMBER" npm run build'`.
+**Watch for:** Quote any single-line YAML command that contains `:`, `{}`, `#`, or other YAML-significant characters; run a YAML parser before pushing CI configuration.
+
 ## `supabase_vector` container restart-loops on Windows Docker Desktop — infra — 2026-08-02
 **Symptom:** `docker ps` shows `supabase_vector_<project>` stuck in `Restarting (0) Ns ago` indefinitely, even right after a clean `supabase stop && supabase start`.
 **Root cause:** Vector's `docker_logs` source tries to reach the Docker Engine API to list running containers for log collection and gets `NetworkUnreachable` — a Docker Desktop-for-Windows networking quirk with this stack, not a project misconfiguration.
