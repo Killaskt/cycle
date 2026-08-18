@@ -1,0 +1,6 @@
+{
+  "commitment_name": "Strength Session",
+  "session_shape": "single full-body strength session",
+  "preferred_bucket": "weekend_morning",
+  "rationale": "Weekend mornings have the most slack for a session that needs recovery time before the next workday."
+}

@@ -1,45 +1,66 @@
-# Issue tracker: GitHub
+# Issue tracker: local markdown
 
-Issues and PRDs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+Tickets for this repo live as local markdown files, **not** GitHub issues, for tonight's build. This repo's `origin` remote is a real GitHub repo (`Killaskt/cycle`) and `gh` works fine here in general — this override exists specifically so the unattended overnight build loop has zero network dependency. Revisit if/when the project moves off a single-session unattended-build workflow.
+
+## Location
+
+```
+.scratch/system-generator/issues/<NNN>-<slug>.md
+```
+
+Zero-padded three-digit id, e.g. `001-schema-migrations.md`, `012-fall-off-escalation-ladder.md`.
+
+## Ticket format
+
+```markdown
+---
+id: 001
+title: Short imperative title
+status: open   # open | in_progress | blocked:needs-human | done
+blocked_by: [] # list of ticket ids, e.g. [001, 003]
+---
+
+## Scope
+
+What this ticket covers. Specific enough that "done" isn't a judgment call.
+
+## Definition of done
+
+Machine-checkable. Name the actual test(s)/assertion(s), not "works correctly."
+Reference `docs/SPEC.md` / `CONTEXT.md` sections by number where relevant.
+
+## Notes
+
+(Appended during implementation: blockers hit, assumptions logged elsewhere,
+anything the next reader needs. Not a duplicate of KNOWN_ISSUES.md or
+CLARIFICATIONS.md — link to entries there instead of restating them.)
+```
 
 ## Conventions
 
-- **Create an issue**: `gh issue create --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> --comments`, filtering comments by `jq` and also fetching labels.
-- **List issues**: `gh issue list --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
-- **Comment on an issue**: `gh issue comment <number> --body "..."`
-- **Apply / remove labels**: `gh issue edit <number> --add-label "..."` / `--remove-label "..."`
-- **Close**: `gh issue close <number> --comment "..."`
+- **Create a ticket**: new file at the path above. `blocked_by` lists ids, not filenames.
+- **Read a ticket**: read the file.
+- **List tickets**: `ls .scratch/system-generator/issues/` — or grep frontmatter across the directory for a specific `status`.
+- **Claim a ticket**: no separate claim step for a single-agent overnight loop — set `status: in_progress` when starting.
+- **Blocking**: the `blocked_by` frontmatter list. A ticket is unblocked when every id in that list has `status: done` (not `blocked:needs-human` — a blocked blocker keeps its dependents blocked too).
+- **Resolve**: set `status: done`, commit. If a ticket can't be finished after genuine retries, set `status: blocked:needs-human` with a `## Notes` entry explaining what was tried — per the retry-cap rule in `.claude/skills/implement-ticket/SKILL.md` — and move to the next unblocked ticket rather than stalling the queue.
 
-Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
+## Frontier query
 
-## Pull requests as a triage surface
-
-**PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
-
-When set to `yes`, PRs run through the same labels and states as issues, using the `gh pr` equivalents:
-
-- **Read a PR**: `gh pr view <number> --comments` and `gh pr diff <number>` for the diff.
-- **List external PRs for triage**: `gh pr list --state open --json number,title,body,labels,author,authorAssociation,comments` then keep only `authorAssociation` of `CONTRIBUTOR`, `FIRST_TIME_CONTRIBUTOR`, or `NONE` (drop `OWNER`/`MEMBER`/`COLLABORATOR`).
-- **Comment / label / close**: `gh pr comment`, `gh pr edit --add-label`/`--remove-label`, `gh pr close`.
-
-GitHub shares one number space across issues and PRs, so a bare `#42` may be either — resolve with `gh pr view 42` and fall back to `gh issue view 42`.
+The next available ticket is: `status: open`, and every id in its `blocked_by` list has `status: done` elsewhere in the directory. When several qualify, take the lowest id first.
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue.
+Create a ticket file at the path above.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> --comments`.
+Read the ticket file directly.
+
+## Pull requests as a triage surface
+
+Not applicable — no PR flow for tonight's local-only loop. Ignore any skill instruction that assumes one.
 
 ## Wayfinding operations
 
-Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
-
-- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
-- **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies** — the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only — the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
-- **Claim**: `gh issue edit <n> --add-assignee @me` — the session's first write.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+Not used in this build (no `/wayfinder` map/child structure needed for tonight's scope). If a future session runs `/wayfinder`, revisit this section rather than improvising a local-file equivalent of GitHub's issue-dependency API — that's a bigger structural decision than a one-line convention update.
