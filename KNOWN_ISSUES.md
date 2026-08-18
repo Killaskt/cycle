@@ -18,6 +18,12 @@ This is for real bugs with a real fix applied — not open design questions (`do
 
 ## Log
 
+## Hosted Supabase can disable required anonymous auth independently of local tests — infra — 2026-08-18
+**Symptom:** The TestFlight app displayed `Anonymous sign-ins are disabled` on first launch after the paused hosted project resumed, even though local authentication integration tests passed.
+**Root cause:** The product intentionally creates an anonymous session on first launch. Local `supabase/config.toml` enables anonymous sign-ins, but that setting is separately managed in the hosted Supabase dashboard and was disabled there. Local-only tests did not exercise the hosted Auth configuration.
+**Fix:** Added `npm run verify:production-auth`, which invokes the same `signInAnonymously()` call against the configured hosted project during the Codemagic TestFlight workflow, before the IPA is built. Enable **Authentication > Providers > Anonymous Sign-Ins** in the hosted Supabase project before running the next release.
+**Watch for:** The preflight creates one anonymous user tagged with `release_preflight: true` per release build. Keep anonymous auth enabled while this product uses first-launch anonymous sessions; do not replace the preflight with a local-only test because hosted Auth providers are configured outside the repository.
+
 ## Production startup failures lacked actionable diagnostics — infra — 2026-08-18
 **Symptom:** The TestFlight build rendered `Load failed` at startup, but the user could not identify whether `initAuthSession()` or the initial `cycles` query failed from the deployed iPhone app.
 **Root cause:** The startup catch rendered only `err.message` and had no production client error reporting; native crash reports and Supabase logs cannot reliably capture WebView-side JavaScript exceptions.

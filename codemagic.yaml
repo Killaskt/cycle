@@ -28,6 +28,8 @@ workflows:
         script: |
           test -n "$VITE_SUPABASE_URL"
           test -n "$VITE_SUPABASE_ANON_KEY"
+      - name: Verify hosted Supabase anonymous auth
+        script: npm run verify:production-auth
       - name: Build web app
         script: 'VITE_APP_VERSION="$BUILD_NUMBER" npm run build'
       - name: Sync web build to iOS

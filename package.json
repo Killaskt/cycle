@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "verify:production-auth": "node scripts/verifyProductionAuth.mjs",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "prepare": "husky"
