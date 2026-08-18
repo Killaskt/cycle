@@ -10,11 +10,7 @@ description: "Use when: preparing, triggering, diagnosing, or distributing the T
 - The release branch is merged to `master`; `codemagic.yaml` triggers `ios-testflight` on a push to that branch.
 - Codemagic app **Tortoise Method IOS** is connected to `github.com/Killaskt/cycle`.
 - Codemagic group `tortoise_method_production` provides `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
-- Codemagic group `tortoise_method_app_store` provides these secret values from an App Store Connect API key:
-  - `APP_STORE_CONNECT_KEY_ID`
-  - `APP_STORE_CONNECT_ISSUER_ID`
-  - `APP_STORE_CONNECT_PRIVATE_KEY` (the complete `.p8` file contents)
-- Apple Developer has an App Store signing profile for `com.tortoisemethod.app`, available to Codemagic.
+- Codemagic Team integrations has an active App Store Connect key named `DevHiveX Key`, with App Manager access to the Apple Developer team and the Tortoise Method app record.
 - App Store Connect has a Tortoise Method app record with bundle ID `com.tortoisemethod.app`.
 
 ## Release Flow
@@ -26,6 +22,5 @@ description: "Use when: preparing, triggering, diagnosing, or distributing the T
 
 ## Failure Triage
 
-- `No matching profiles found` means Codemagic lacks an App Store signing profile for `com.tortoisemethod.app`.
-- Missing `APP_STORE_CONNECT_*` values means the TestFlight upload credentials were not added to `tortoise_method_app_store`.
+- `No matching profiles found` means the configured Apple Developer Portal integration cannot find or create an App Store signing profile for `com.tortoisemethod.app`; verify its Apple-team access and App Manager permission.
 - UI/auth tests failing with missing `VITE_SUPABASE_*` values means the CI `npm test` step lost its local Supabase environment.

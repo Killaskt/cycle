@@ -3,10 +3,11 @@ workflows:
     name: Tortoise Method iOS (TestFlight)
     instance_type: mac_mini_m2
     max_build_duration: 60
+    integrations:
+      app_store_connect: DevHiveX Key
     environment:
       groups:
         - tortoise_method_production
-        - tortoise_method_app_store
       ios_signing:
         distribution_type: app_store
         bundle_identifier: com.tortoisemethod.app
@@ -46,9 +47,7 @@ workflows:
             --scheme App
     publishing:
       app_store_connect:
-        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
-        key_id: $APP_STORE_CONNECT_KEY_ID
-        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        auth: integration
         submit_to_testflight: true
     artifacts:
       - build/ios/ipa/*.ipa
