@@ -29,7 +29,7 @@ workflows:
           test -n "$VITE_SUPABASE_URL"
           test -n "$VITE_SUPABASE_ANON_KEY"
       - name: Build web app
-        script: npm run build
+            script: VITE_APP_VERSION="$BUILD_NUMBER" npm run build
       - name: Sync web build to iOS
         script: npx cap sync ios
       - name: Set iOS build number

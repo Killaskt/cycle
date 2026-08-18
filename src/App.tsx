@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import * as Sentry from '@sentry/react'
 import { initAuthSession } from './lib/auth'
 import { supabase } from './lib/supabase'
 import { Intake } from './screens/Intake'
@@ -37,6 +38,9 @@ function App() {
         setState(cycle.status === 'draft' ? { screen: 'system', cycleId: cycle.id } : { screen: 'today', cycleId: cycle.id })
       }
     } catch (err) {
+      Sentry.captureException(err, {
+        tags: { operation: 'load_current_cycle' },
+      })
       setState({
         screen: 'error',
         message: err instanceof Error ? err.message : 'Unable to start Cycle.',
